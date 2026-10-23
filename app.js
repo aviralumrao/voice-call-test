@@ -202,27 +202,73 @@
   }
 
   function onPluginMessage(message, jsep) {
-    const event = message && message.audiobridge;
-    if (event === 'joined') {
-      setAudioState('Connected · microphone on');
-      log(`Joined Janus room ${message.room}.`);
-      plugin.createOffer({
-        media: { audio: true, video: false },
-        success: (offer) => plugin.send({ message: { request: 'configure', muted: false }, jsep: offer }),
-        error: (error) => { log(`Microphone offer failed: ${error}`, true); setAudioState('Microphone error'); }
-      });
-    } else if (event === 'event') {
-      const publishers = message.publishers || [];
-      if (publishers.length) log(`${publishers.length} participant(s) already in the room.`);
-      if (message.leaving) log(`Participant ${message.leaving} left the room.`);
-      if (message.unpublished) log(`Participant ${message.unpublished} stopped publishing.`);
-    }
-    if (jsep) plugin.handleRemoteJsep({ jsep });
-  }
+    const event = message?.audiobridge;
 
+    if (event === "joined") {
+      setAudioState("Joined room  configuring microphone");
+      log(`Joined Janus room ${message.room}.`);
+
+      plugin.createOffer({
+        media: {
+          audio: true,
+          video: false
+        },
+        success: (offer) => {
+          log("Microphone offer created.");
+
+          plugin.send({
+            message: {
+              request: "configure",
+              muted: false
+            },
+            jsep: offer
+          });
+        },
+        error: (error) => {
+          log(`Microphone offer failed: ${error}`, true);
+          setAudioState("Microphone error");
+        }
+      });
+    }
+
+    if (event === "event") {
+      if (message.error) {
+        log(`AudioBridge error: ${message.error}`, true);
+      }
+
+      if (message.publishers?.length) {
+        log(
+          `${message.publishers.length} existing participant(s) reported.`
+        );
+      }
+
+      if (message.leaving) {
+        log(`Participant ${message.leaving} left.`);
+      }
+
+      if (message.unpublished) {
+        log(`Participant ${message.unpublished} stopped publishing.`);
+      }
+    }
+
+    if (jsep) {
+      log(`Received remote JSEP: ${jsep.type || "unknown type"}.`);
+
+      plugin.handleRemoteJsep({
+        jsep: jsep
+      });
+    }
+  }
   function onRemoteTrack(track, mid, added) {
-    if (!track || track.kind !== 'audio') return;
+    if (!track || track.kind !== "audio") return;
+
     const id = `remote-${mid}`;
+
+    log(
+      `Remote audio track ${id}: ${added ? "added" : "removed"}, ` +
+      `state=${track.readyState}, enabled=${track.enabled}, muted=${track.muted}`
+    );
+
     let audio = document.getElementById(id);
     if (added) {
       if (!audio) {
@@ -242,6 +288,18 @@
         });
       }
       audio.srcObject = new MediaStream([track]);
+
+      track.onunmute = () => {
+        log(`Remote audio ${id} is receiving unmuted media.`);
+      };
+
+      track.onmute = () => {
+        log(`Remote audio ${id} stopped receiving media.`, true);
+      };
+
+      track.onended = () => {
+        log(`Remote audio ${id} ended.`, true);
+      };
       audio.volume = Number($('speakerVolume').value) / 100;
       $('enableAudioButton').disabled = false;
       $('remotePlaybackState').textContent = 'Remote audio track received. Checking browser playback…';
