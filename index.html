@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FrietSync Voice Call Test</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/8.2.3/adapter.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/janus-gateway@1.2.2/src/janus.js" onload="if(!window.Janus){document.getElementById('appStatus').textContent='Janus script loaded but did not expose window.Janus. Check the script version.';document.getElementById('appStatus').className='error-banner';}" onerror="document.getElementById('appStatus').textContent='Could not load Janus from jsDelivr. Check the browser Network tab, firewall, or CDN access.';document.getElementById('appStatus').className='error-banner';"></script>
+    <script defer src="app.js" onerror="document.getElementById('appStatus').textContent='The app script failed to load. Reload the page and check the Console and Network tabs for app.js.';document.getElementById('appStatus').className='error-banner';"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <p class="eyebrow">FRIETSYNC · AUDIOBRIDGE</p>
+        <h1>Voice call test</h1>
+        <p class="intro">Use two browser windows to test a call. Each participant needs a valid FrietSync bearer token and project membership.</p>
+        <p id="appStatus" class="app-status" role="status" aria-live="polite">Loading controls…</p>
+      </header>
+
+      <section class="panel settings">
+        <h2>Connection</h2>
+        <label>Backend API base URL<input id="apiUrl" value="https://frietsync.live" placeholder="https://api.example.com"></label>
+        <label>Janus WebSocket URL<input id="janusUrl" value="wss://janus.frietsync.live/" placeholder="wss://janus.example.com"></label>
+        <label>Project ID<input id="projectId" autocomplete="off" placeholder="Project UUID"></label>
+        <label>Bearer token<input id="token" type="password" autocomplete="off" placeholder="Paste access token"></label>
+        <p class="hint">Settings are kept only in this page and are not saved to disk.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Call</h2>
+        <div class="actions">
+          <button id="startButton" class="primary">Start new call</button>
+          <button id="activeButton">Find active call</button>
+        </div>
+        <label>Call ID<input id="callId" autocomplete="off" placeholder="Created or active call UUID"></label>
+        <div class="actions">
+          <button id="joinButton">Join call</button>
+          <button id="leaveButton" disabled>Leave call</button>
+          <button id="endButton" class="danger" disabled>End call</button>
+        </div>
+        <div class="call-details" aria-live="polite">
+          <div><span>Room ID</span><code id="roomId">—</code></div>
+          <div><span>Room PIN</span><code id="roomPin">—</code></div>
+          <div><span>Audio</span><strong id="audioState">Not connected</strong></div>
+        </div>
+        <div class="actions audio-actions">
+          <button id="muteButton" disabled>Mute microphone</button>
+          <button id="hangupButton" disabled>Disconnect audio</button>
+          <button id="enableAudioButton">Enable remote audio</button>
+        </div>
+        <p id="remotePlaybackState" class="hint" role="status" aria-live="polite">Click Enable remote audio in each browser before other participants join. Playback status will appear here.</p>
+        <div class="audio-monitor" aria-label="Audio levels and speaker volume">
+          <div class="meter-row"><label for="micLevel">Microphone input</label><meter id="micLevel" min="0" max="1" value="0">0%</meter><span id="micLevelText">0%</span></div>
+          <div class="meter-row"><label for="incomingLevel">Incoming audio</label><meter id="incomingLevel" min="0" max="1" value="0">0%</meter><span id="incomingLevelText">0%</span></div>
+          <label class="volume-control" for="speakerVolume">Speaker volume <span id="speakerVolumeText">100%</span><input id="speakerVolume" type="range" min="0" max="100" value="100"></label>
+        </div>
+        <div id="remoteAudio" class="remote-audio" aria-label="Remote participants"></div>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="log-heading"><h2>Activity</h2><button id="clearLogButton" class="quiet">Clear</button></div>
+        <ol id="log" aria-live="polite"></ol>
+      </section>
+      <footer>Audio requires microphone permission and a secure browser context (HTTPS or localhost). Janus media connectivity also requires the server’s WebRTC UDP ports to be reachable.</footer>
+    </main>
+  </body>
+</html>
