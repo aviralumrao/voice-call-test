@@ -202,6 +202,8 @@
   }
 
   function onPluginMessage(message, jsep) {
+    console.log("[AudioBridge event]", message);
+    
     const event = message?.audiobridge;
 
     if (event === "joined") {
