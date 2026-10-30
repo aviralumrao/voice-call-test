@@ -12,6 +12,7 @@
   let audioContext = null;
   let meterFrame = null;
   let connecting = false;
+  let currentRoom = null;
   let janusInitialized = false;
 
   function log(message, error = false) {
@@ -423,6 +424,8 @@
     if (event === 'joined') {
       setAudioState('Joined room — configuring microphone');
 
+      currentRoom = message.room;
+
       log(`Joined Janus room ${message.room}.`);
 
       handle.createOffer({
@@ -505,7 +508,8 @@
         stats.forEach((report) => {
           if (
             (report.type === 'inbound-rtp' ||
-              report.type === 'outbound-rtp') &&
+              report.type === 'outbound-rtp' ||
+              report.type === 'media-source') &&
             (report.kind === 'audio' ||
               report.mediaType === 'audio')
           ) {
@@ -516,7 +520,9 @@
               bytesSent: report.bytesSent ?? 0,
               packetsReceived: report.packetsReceived ?? 0,
               packetsSent: report.packetsSent ?? 0,
-              packetsLost: report.packetsLost ?? 0
+              packetsLost: report.packetsLost ?? 0,
+              audioLevel: report.audioLevel ?? '',
+              totalAudioEnergy: report.totalAudioEnergy ?? ''
             });
           }
         });
@@ -538,6 +544,42 @@
         );
       });
   }
+
+  // Diagnostic: ask Janus who is in the room and their muted state.
+  function listParticipants() {
+    if (!plugin || currentRoom == null) {
+      console.warn('[listparticipants] not joined yet.');
+      return;
+    }
+
+    plugin.send({
+      message: { request: 'listparticipants', room: currentRoom },
+
+      success: (result) => {
+        console.log('[listparticipants]', result);
+
+        console.table(
+          (result.participants || []).map((p) => ({
+            id: p.id,
+            display: p.display,
+            muted: p.muted,
+            setup: p.setup,
+            talking: p.talking
+          }))
+        );
+      },
+
+      error: (error) => {
+        console.error('[listparticipants] failed:', error);
+      }
+    });
+  }
+
+  // Type diag() in the browser Console after both people have joined.
+  window.diag = () => {
+    logAudioStats('manual');
+    listParticipants();
+  };
 
   function onRemoteTrack(track, mid, added) {
     if (!track || track.kind !== 'audio') return;
