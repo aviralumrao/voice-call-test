@@ -11,6 +11,8 @@
   const incomingMeters = new Map();
   let audioContext = null;
   let meterFrame = null;
+  let connecting = false;
+  let janusInitialized = false;
 
   function log(message, error = false) {
     const item = document.createElement('li');
@@ -304,6 +306,21 @@
     log(`Found active call ${data.id}.`);
   }
 
+  function initJanus() {
+    if (janusInitialized) return Promise.resolve();
+
+    return new Promise((resolve) => {
+      Janus.init({
+        debug: 'warn',
+
+        callback: () => {
+          janusInitialized = true;
+          resolve();
+        }
+      });
+    });
+  }
+
   async function connectAudio(roomId, roomPin) {
     if (!window.Janus) {
       throw new Error(
@@ -319,79 +336,86 @@
 
     setAudioState('Connecting…');
 
+    await initJanus();
+
     await new Promise((resolve, reject) => {
-      Janus.init({
-        debug: 'warn',
+      // Local references so callbacks from an old session
+      // can never touch a newer session.
+      let myHandle = null;
 
-        callback: () => {
-          janus = new Janus({
-            server,
+      const myJanus = new Janus({
+        server,
 
-            success: () => janus.attach({
-              plugin: 'janus.plugin.audiobridge',
+        success: () => myJanus.attach({
+          plugin: 'janus.plugin.audiobridge',
 
-              success: (handle) => {
-                plugin = handle;
+          success: (handle) => {
+            myHandle = handle;
+            plugin = handle;
 
-                const request = {
-                  request: 'join',
-                  room: Number(roomId),
-                  display: `FrietSync ${Math.random()
-                    .toString(36)
-                    .slice(2, 7)}`
-                };
+            const request = {
+              request: 'join',
+              room: Number(roomId),
+              display: `FrietSync ${Math.random()
+                .toString(36)
+                .slice(2, 7)}`
+            };
 
-                if (roomPin) request.pin = roomPin;
+            if (roomPin) request.pin = roomPin;
 
-                plugin.send({ message: request });
+            handle.send({ message: request });
 
-                resolve();
-              },
+            resolve();
+          },
 
-              error: (error) => {
-                reject(
-                  new Error(`AudioBridge attach failed: ${error}`)
-                );
-              },
+          error: (error) => {
+            reject(
+              new Error(`AudioBridge attach failed: ${error}`)
+            );
+          },
 
-              onmessage: (message, jsep) =>
-                onPluginMessage(message, jsep),
+          onmessage: (message, jsep) =>
+            onPluginMessage(myHandle, message, jsep),
 
-              onlocaltrack: (track, added) => {
-                log(`Local microphone ${added ? 'ready' : 'removed'}.`);
+          onlocaltrack: (track, added) => {
+            log(`Local microphone ${added ? 'ready' : 'removed'}.`);
 
-                if (added && track.kind === 'audio') {
-                  micMeter = createMeter(new MediaStream([track]));
-                  startMeterUpdates();
-                } else if (!added) {
-                  micMeter = null;
-                }
-              },
-
-              onremotetrack: (track, mid, added) =>
-                onRemoteTrack(track, mid, added),
-
-              oncleanup: () => {
-                plugin = null;
-                setAudioState('Disconnected');
-              }
-            }),
-
-            error: (error) => {
-              reject(new Error(`Janus connection failed: ${error}`));
-            },
-
-            destroyed: () => {
-              janus = null;
-              plugin = null;
+            if (added && track.kind === 'audio') {
+              micMeter = createMeter(new MediaStream([track]));
+              startMeterUpdates();
+            } else if (!added) {
+              micMeter = null;
             }
-          });
+          },
+
+          onremotetrack: (track, mid, added) =>
+            onRemoteTrack(track, mid, added),
+
+          oncleanup: () => {
+            if (plugin === myHandle) {
+              plugin = null;
+              setAudioState('Disconnected');
+            }
+          }
+        }),
+
+        error: (error) => {
+          reject(new Error(`Janus connection failed: ${error}`));
+        },
+
+        destroyed: () => {
+          if (janus === myJanus) {
+            janus = null;
+            plugin = null;
+          }
         }
       });
+
+      janus = myJanus;
     });
   }
 
-  function onPluginMessage(message, jsep) {
+  function onPluginMessage(handle, message, jsep) {
     console.log('[AudioBridge event]', message);
 
     const event = message?.audiobridge;
@@ -401,7 +425,7 @@
 
       log(`Joined Janus room ${message.room}.`);
 
-      plugin.createOffer({
+      handle.createOffer({
         media: {
           audio: true,
           video: false
@@ -410,7 +434,7 @@
         success: (offer) => {
           log('Microphone offer created.');
 
-          plugin.send({
+          handle.send({
             message: {
               request: 'configure',
               muted: false
@@ -460,7 +484,7 @@
     if (jsep) {
       log(`Received remote JSEP: ${jsep.type || 'unknown type'}.`);
 
-      plugin.handleRemoteJsep({ jsep });
+      handle.handleRemoteJsep({ jsep });
     }
   }
 
@@ -660,23 +684,33 @@
   }
 
   async function joinCall() {
-    const callId = $('callId').value.trim();
+    if (connecting) return;
+    connecting = true;
 
-    if (!callId) {
-      throw new Error('Enter a call ID or find an active call first.');
+    try {
+      // Tear down any old session so we never end up with two.
+      if (janus || plugin) await disconnectAudio();
+
+      const callId = $('callId').value.trim();
+
+      if (!callId) {
+        throw new Error('Enter a call ID or find an active call first.');
+      }
+
+      const data = await api(
+        `${projectCallsPath()}/${encodeURIComponent(callId)}/join`
+      );
+
+      showCall(data);
+
+      joinedBackend = true;
+
+      log(`Backend authorized join for call ${data.id}.`);
+
+      await connectAudio(data.roomId, data.roomPin);
+    } finally {
+      connecting = false;
     }
-
-    const data = await api(
-      `${projectCallsPath()}/${encodeURIComponent(callId)}/join`
-    );
-
-    showCall(data);
-
-    joinedBackend = true;
-
-    log(`Backend authorized join for call ${data.id}.`);
-
-    await connectAudio(data.roomId, data.roomPin);
   }
 
   async function disconnectAudio() {
@@ -788,7 +822,7 @@
   $('leaveButton').addEventListener('click', () => run(leaveCall));
   $('endButton').addEventListener('click', () => run(endCall));
   $('muteButton').addEventListener('click', () => run(toggleMute));
-  $('hangupButton').addEventListener('click', () => run(disconnectAudio));
+  $('hangupButton').addEventListener('click', () => run(leaveCall));
   $('enableAudioButton').addEventListener('click', () => run(enableRemoteAudio));
 
   $('speakerVolume').addEventListener('input', applySpeakerVolume);
