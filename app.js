@@ -13,6 +13,7 @@
   let meterFrame = null;
   let connecting = false;
   let currentRoom = null;
+  const offerStarted = new WeakSet();
   let janusInitialized = false;
 
   function log(message, error = false) {
@@ -354,6 +355,25 @@
             myHandle = handle;
             plugin = handle;
 
+            // Diagnostic: print who calls createOffer / sends an SDP.
+            const origCreateOffer = handle.createOffer.bind(handle);
+            handle.createOffer = (opts) => {
+              console.trace('[createOffer] called');
+              log('createOffer called (see Console for the stack).');
+              return origCreateOffer(opts);
+            };
+
+            const origSend = handle.send.bind(handle);
+            handle.send = (params) => {
+              if (params && params.jsep) {
+                console.trace(
+                  `[send with jsep] type=${params.jsep.type}`,
+                  params.message && params.message.request
+                );
+              }
+              return origSend(params);
+            };
+
             const request = {
               request: 'join',
               room: Number(roomId),
@@ -421,7 +441,12 @@
 
     const event = message?.audiobridge;
 
-    if (event === 'joined') {
+    if (event === 'joined' && offerStarted.has(handle)) {
+      log('Ignored a duplicate "joined" event: offer already sent.', true);
+      console.warn('[AudioBridge] duplicate joined ignored', message);
+    } else if (event === 'joined') {
+      offerStarted.add(handle);
+
       setAudioState('Joined room — configuring microphone');
 
       currentRoom = message.room;
