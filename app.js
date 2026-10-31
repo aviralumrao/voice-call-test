@@ -1,9 +1,17 @@
 (() => {
-  const $ = (id) => document.getElementById(id);
+  const REQUEST_TIMEOUT_MS = 20_000;
+  const elementCache = new Map();
+  const $ = (id) => {
+    if (!elementCache.has(id)) {
+      const element = document.getElementById(id);
+      if (!element) throw new Error(`Required page element is missing: #${id}`);
+      elementCache.set(id, element);
+    }
+    return elementCache.get(id);
+  };
   const logList = $('log');
   let janus = null;
   let plugin = null;
-  let call = null;
   let muted = false;
   let joinedBackend = false;
   let remotePlaybackEnabled = false;
@@ -84,41 +92,37 @@
     };
   }
 
+  function measureLevel(meter) {
+    if (!meter) return 0;
+
+    meter.analyser.getByteTimeDomainData(meter.samples);
+    let sum = 0;
+
+    for (const sample of meter.samples) {
+      const value = (sample - 128) / 128;
+      sum += value * value;
+    }
+
+    return Math.min(1, Math.sqrt(sum / meter.samples.length) * 4);
+  }
+
+  function renderMeter(id, value) {
+    $(`${id}Level`).value = value;
+    $(`${id}LevelText`).textContent = `${Math.round(value * 100)}%`;
+  }
+
   function startMeterUpdates() {
     if (meterFrame !== null) return;
 
     const update = () => {
-      const level = (meter) => {
-        if (!meter) return 0;
-
-        meter.analyser.getByteTimeDomainData(meter.samples);
-
-        let sum = 0;
-
-        for (const sample of meter.samples) {
-          const value = (sample - 128) / 128;
-          sum += value * value;
-        }
-
-        return Math.min(
-          1,
-          Math.sqrt(sum / meter.samples.length) * 4
-        );
-      };
-
-      const mic = muted ? 0 : level(micMeter);
-
+      const mic = muted ? 0 : measureLevel(micMeter);
       const incoming = Math.max(
         0,
-        ...Array.from(incomingMeters.values(), level)
+        ...Array.from(incomingMeters.values(), measureLevel)
       );
 
-      $('micLevel').value = mic;
-      $('micLevelText').textContent = `${Math.round(mic * 100)}%`;
-
-      $('incomingLevel').value = incoming;
-      $('incomingLevelText').textContent =
-        `${Math.round(incoming * 100)}%`;
+      renderMeter('mic', mic);
+      renderMeter('incoming', incoming);
 
       meterFrame = requestAnimationFrame(update);
     };
@@ -218,7 +222,7 @@
           Authorization: `Bearer ${token}`,
           Accept: 'application/json'
         },
-        signal: AbortSignal.timeout(20000)
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       });
     } catch (error) {
       if (
@@ -226,7 +230,7 @@
         error.name === 'AbortError'
       ) {
         throw new Error(
-          `Request timed out after 20 seconds: ${method} ${url}`
+          `Request timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds: ${method} ${url}`
         );
       }
 
@@ -283,8 +287,6 @@
   }
 
   function showCall(data) {
-    call = data;
-
     $('callId').value = data.id || '';
     $('roomId').textContent = data.roomId ?? '—';
     $('roomPin').textContent = data.roomPin || '(no PIN configured)';
