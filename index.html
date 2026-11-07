@@ -3,18 +3,18 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>FrietSync Voice Call Test</title>
+    <title>FrietSync Video Call Test</title>
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/8.2.3/adapter.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/janus-gateway@1.2.2/src/janus.js" onload="if(!window.Janus){document.getElementById('appStatus').textContent='Janus script loaded but did not expose window.Janus. Check the script version.';document.getElementById('appStatus').className='error-banner';}" onerror="document.getElementById('appStatus').textContent='Could not load Janus from jsDelivr. Check the browser Network tab, firewall, or CDN access.';document.getElementById('appStatus').className='error-banner';"></script>
-    <script defer src="app.js" onerror="document.getElementById('appStatus').textContent='The app script failed to load. Reload the page and check the Console and Network tabs for app.js.';document.getElementById('appStatus').className='error-banner';"></script>
+    <script src="https://cdn.jsdelivr.net/npm/janus-gateway@1.2.2/src/janus.js" onerror="document.getElementById('appStatus').textContent='Could not load Janus from jsDelivr. Check the Network tab.';document.getElementById('appStatus').className='error-banner';"></script>
+    <script defer src="app.js" onerror="document.getElementById('appStatus').textContent='app.js failed to load.';document.getElementById('appStatus').className='error-banner';"></script>
   </head>
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">FRIETSYNC · AUDIOBRIDGE</p>
-        <h1>Voice call test</h1>
-        <p class="intro">Use two browser windows to test a call. Each participant needs a valid FrietSync bearer token and project membership.</p>
+        <p class="eyebrow">FRIETSYNC · VIDEOROOM</p>
+        <h1>Video call test</h1>
+        <p class="intro">Open two browser windows (or one on your phone) to test a call. Each participant needs a valid FrietSync bearer token and project membership.</p>
         <p id="appStatus" class="app-status" role="status" aria-live="polite">Loading controls…</p>
       </header>
 
@@ -29,6 +29,9 @@
 
       <section class="panel">
         <h2>Call</h2>
+        <label>Call type (used when starting a call)
+          <select id="callType"><option value="VIDEO">VIDEO</option><option value="AUDIO">AUDIO</option></select>
+        </label>
         <div class="actions">
           <button id="startButton" class="primary">Start new call</button>
           <button id="activeButton">Find active call</button>
@@ -42,27 +45,22 @@
         <div class="call-details" aria-live="polite">
           <div><span>Room ID</span><code id="roomId">—</code></div>
           <div><span>Room PIN</span><code id="roomPin">—</code></div>
-          <div><span>Audio</span><strong id="audioState">Not connected</strong></div>
+          <div><span>Media</span><strong id="mediaState">Not connected</strong></div>
         </div>
-        <div class="actions audio-actions">
+        <div class="actions">
           <button id="muteButton" disabled>Mute microphone</button>
-          <button id="hangupButton" disabled>Disconnect audio</button>
+          <button id="cameraButton" disabled>Turn camera off</button>
           <button id="enableAudioButton">Enable remote audio</button>
         </div>
-        <p id="remotePlaybackState" class="hint" role="status" aria-live="polite">Click Enable remote audio in each browser before other participants join. Playback status will appear here.</p>
-        <div class="audio-monitor" aria-label="Audio levels and speaker volume">
-          <div class="meter-row"><label for="micLevel">Microphone input</label><meter id="micLevel" min="0" max="1" value="0">0%</meter><span id="micLevelText">0%</span></div>
-          <div class="meter-row"><label for="incomingLevel">Incoming audio</label><meter id="incomingLevel" min="0" max="1" value="0">0%</meter><span id="incomingLevelText">0%</span></div>
-          <label class="volume-control" for="speakerVolume">Speaker volume <span id="speakerVolumeText">100%</span><input id="speakerVolume" type="range" min="0" max="100" value="100"></label>
-        </div>
-        <div id="remoteAudio" class="remote-audio" aria-label="Remote participants"></div>
+        <p id="remotePlaybackState" class="hint" role="status" aria-live="polite">If remote video or sound does not start, click Enable remote audio.</p>
+        <div id="videoGrid" class="video-grid" aria-label="Participants"></div>
       </section>
 
       <section class="panel log-panel">
         <div class="log-heading"><h2>Activity</h2><button id="clearLogButton" class="quiet">Clear</button></div>
         <ol id="log" aria-live="polite"></ol>
       </section>
-      <footer>Audio requires microphone permission and a secure browser context (HTTPS or localhost). Janus media connectivity also requires the server’s WebRTC UDP ports to be reachable.</footer>
+      <footer>Video needs camera and microphone permission and a secure context (HTTPS or localhost). The server's UDP ports 10000-10200 must be reachable.</footer>
     </main>
   </body>
 </html>

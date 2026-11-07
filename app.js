@@ -1,20 +1,20 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const logList = $('log');
+
   let janus = null;
-  let plugin = null;
-  let call = null;
-  let muted = false;
-  let joinedBackend = false;
-  let remotePlaybackEnabled = false;
-  let micMeter = null;
-  const incomingMeters = new Map();
-  let audioContext = null;
-  let meterFrame = null;
-  let connecting = false;
+  let pub = null;            // publisher handle (our own camera and mic)
+  let myId = null;
+  let myPrivateId = null;
   let currentRoom = null;
-  const offerStarted = new WeakSet();
+  let currentPin = null;
+  let localVideo = null;
+  let localTile = null;
+  let call = null;
+  let joinedBackend = false;
+  let connecting = false;
   let janusInitialized = false;
+  const feeds = new Map();   // feedId -> { id, handle, tile, video, stream }
 
   function log(message, error = false) {
     const item = document.createElement('li');
@@ -23,235 +23,72 @@
     logList.prepend(item);
   }
 
-  window.addEventListener('error', (event) => {
-    log(
-      `Page script error: ${event.message || 'Unknown JavaScript error'}${event.filename ? ` (${event.filename}:${event.lineno})` : ''}`,
-      true
-    );
-  });
+  const errorMessage = (e) => (e instanceof Error ? e.message : String(e ?? 'Unknown error'));
 
-  window.addEventListener('unhandledrejection', (event) => {
-    log(`Unexpected async error: ${errorMessage(event.reason)}`, true);
-  });
+  window.addEventListener('error', (e) => log(`Page script error: ${e.message}`, true));
+  window.addEventListener('unhandledrejection', (e) => log(`Async error: ${errorMessage(e.reason)}`, true));
 
-  $('appStatus').textContent =
-    'Controls loaded. API requests will be reported in Activity.';
+  $('appStatus').textContent = 'Controls loaded. API requests will be reported in Activity.';
 
-  function errorMessage(error) {
-    return error instanceof Error
-      ? error.message
-      : String(error ?? 'Unknown error');
-  }
-
-  function setAudioState(text) {
-    $('audioState').textContent = text;
+  function setMediaState(text) {
+    $('mediaState').textContent = text;
   }
 
   function setCallControls(inCall) {
-    $('leaveButton').disabled = !inCall;
-    $('endButton').disabled = !inCall;
-    $('muteButton').disabled = !inCall;
-    $('hangupButton').disabled = !inCall;
+    ['leaveButton', 'endButton', 'muteButton', 'cameraButton'].forEach((id) => {
+      $(id).disabled = !inCall;
+    });
   }
 
-  function getAudioContext() {
-    const AudioContextClass =
-      window.AudioContext || window.webkitAudioContext;
-
-    if (!AudioContextClass) return null;
-
-    if (!audioContext) audioContext = new AudioContextClass();
-
-    if (audioContext.state === 'suspended') {
-      audioContext.resume().catch(() => {});
-    }
-
-    return audioContext;
-  }
-
-  function createMeter(stream) {
-    const context = getAudioContext();
-    if (!context) return null;
-
-    const analyser = context.createAnalyser();
-    analyser.fftSize = 512;
-
-    context.createMediaStreamSource(stream).connect(analyser);
-
-    return {
-      analyser,
-      samples: new Uint8Array(analyser.fftSize)
-    };
-  }
-
-  function startMeterUpdates() {
-    if (meterFrame !== null) return;
-
-    const update = () => {
-      const level = (meter) => {
-        if (!meter) return 0;
-
-        meter.analyser.getByteTimeDomainData(meter.samples);
-
-        let sum = 0;
-
-        for (const sample of meter.samples) {
-          const value = (sample - 128) / 128;
-          sum += value * value;
-        }
-
-        return Math.min(
-          1,
-          Math.sqrt(sum / meter.samples.length) * 4
-        );
-      };
-
-      const mic = muted ? 0 : level(micMeter);
-
-      const incoming = Math.max(
-        0,
-        ...Array.from(incomingMeters.values(), level)
-      );
-
-      $('micLevel').value = mic;
-      $('micLevelText').textContent = `${Math.round(mic * 100)}%`;
-
-      $('incomingLevel').value = incoming;
-      $('incomingLevelText').textContent =
-        `${Math.round(incoming * 100)}%`;
-
-      meterFrame = requestAnimationFrame(update);
-    };
-
-    meterFrame = requestAnimationFrame(update);
-  }
-
-  function stopMeterUpdates() {
-    if (meterFrame !== null) cancelAnimationFrame(meterFrame);
-
-    meterFrame = null;
-    micMeter = null;
-    incomingMeters.clear();
-
-    $('micLevel').value = $('incomingLevel').value = 0;
-
-    $('micLevelText').textContent =
-      $('incomingLevelText').textContent = '0%';
-  }
-
-  function applySpeakerVolume() {
-    const volume = Number($('speakerVolume').value) / 100;
-
-    $('speakerVolumeText').textContent =
-      `${Math.round(volume * 100)}%`;
-
-    $('remoteAudio')
-      .querySelectorAll('audio')
-      .forEach((audio) => {
-        audio.volume = volume;
-      });
-  }
-
-  function apiBase() {
-    return $('apiUrl').value.trim().replace(/\/$/, '');
-  }
+  // ---------- Backend API (same endpoints as the voice test) ----------
 
   function validatedApiBase() {
-    const value = apiBase();
-
-    if (!value) {
-      throw new Error('Enter the backend API base URL.');
-    }
-
+    const value = $('apiUrl').value.trim().replace(/\/$/, '');
+    if (!value) throw new Error('Enter the backend API base URL.');
     let url;
-
     try {
       url = new URL(value);
     } catch (_) {
-      throw new Error(
-        'Backend API base URL is invalid. Include http:// or https://.'
-      );
+      throw new Error('Backend API base URL is invalid. Include http:// or https://.');
     }
-
-    if (!['http:', 'https:'].includes(url.protocol)) {
-      throw new Error('Backend API URL must use HTTP or HTTPS.');
-    }
-
     if (location.protocol === 'https:' && url.protocol === 'http:') {
-      throw new Error(
-        'The page is HTTPS but the API URL is HTTP; browsers block this mixed-content request. Use an HTTPS API URL.'
-      );
+      throw new Error('The page is HTTPS but the API URL is HTTP. Browsers block this. Use an HTTPS API URL.');
     }
-
     return url.origin + url.pathname.replace(/\/$/, '');
   }
 
   function projectCallsPath() {
     const projectId = $('projectId').value.trim();
-
-    if (!projectId) {
-      throw new Error('Enter a project ID first.');
-    }
-
+    if (!projectId) throw new Error('Enter a project ID first.');
     return `/api/v1/projects/${encodeURIComponent(projectId)}/calls`;
   }
 
   async function api(path, method = 'POST') {
     const token = $('token').value.trim();
+    if (!token) throw new Error('Enter a bearer token first.');
 
-    if (!token) {
-      throw new Error('Enter a bearer token first.');
-    }
-
-    const base = validatedApiBase();
-    const url = `${base}${path}`;
-
+    const url = `${validatedApiBase()}${path}`;
     log(`Sending ${method} ${url}`);
 
     let response;
-
     try {
       response = await fetch(url, {
         method,
         mode: 'cors',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/json'
-        },
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
         signal: AbortSignal.timeout(20000)
       });
     } catch (error) {
-      if (
-        error.name === 'TimeoutError' ||
-        error.name === 'AbortError'
-      ) {
-        throw new Error(
-          `Request timed out after 20 seconds: ${method} ${url}`
-        );
+      if (error.name === 'TimeoutError' || error.name === 'AbortError') {
+        throw new Error(`Request timed out after 20 seconds: ${method} ${url}`);
       }
-
-      throw new Error(
-        `Could not complete ${method} ${url}. Check CORS, DNS/TLS, network access, and the API URL. (${errorMessage(error)})`
-      );
+      throw new Error(`Could not complete ${method} ${url}. Check CORS, DNS/TLS and the API URL. (${errorMessage(error)})`);
     }
 
-    log(
-      `Received HTTP ${response.status} ${response.statusText || ''}`.trim(),
-      !response.ok
-    );
+    log(`Received HTTP ${response.status} ${response.statusText || ''}`.trim(), !response.ok);
 
-    let text;
-
-    try {
-      text = await response.text();
-    } catch (error) {
-      throw new Error(
-        `Received HTTP ${response.status}, but could not read the response body: ${errorMessage(error)}`
-      );
-    }
-
+    const text = await response.text();
     let body = null;
-
     try {
       body = text ? JSON.parse(text) : null;
     } catch (_) {
@@ -259,620 +96,345 @@
     }
 
     if (!response.ok) {
-      const detail =
-        body && typeof body === 'object'
-          ? (body.message ||
-             body.error ||
-             body.detail ||
-             JSON.stringify(body))
-          : body;
-
+      const detail = body && typeof body === 'object'
+        ? (body.message || body.error || body.detail || JSON.stringify(body))
+        : body;
       const hints = {
         401: 'Check that the bearer token is valid and not expired.',
         403: 'The account may not have permission for this project or action.',
         404: 'Check the project ID, call ID, and API route.',
         429: 'The backend is rate limiting requests.'
       };
-
       throw new Error(
-        `Backend returned HTTP ${response.status}${detail ? `: ${String(detail).slice(0, 500)}` : ''}${hints[response.status] ? ` ${hints[response.status]}` : ''}`
+        `Backend returned HTTP ${response.status}${detail ? `: ${String(detail).slice(0, 500)}` : ''} ${hints[response.status] || ''}`.trim()
       );
     }
-
     return body;
   }
 
   function showCall(data) {
     call = data;
-
     $('callId').value = data.id || '';
     $('roomId').textContent = data.roomId ?? '—';
     $('roomPin').textContent = data.roomPin || '(no PIN configured)';
-
     setCallControls(true);
   }
 
   async function startCall() {
-    const data = await api(projectCallsPath());
-
+    // Assumption: the backend picks the Janus plugin from a "type" query param.
+    // If your controller reads it differently, change this one line.
+    const type = $('callType').value;
+    const data = await api(`${projectCallsPath()}?type=${encodeURIComponent(type)}`);
     showCall(data);
-
     log(`Call started. Call ID ${data.id}; room ${data.roomId}.`);
   }
 
   async function findActiveCall() {
     const data = await api(`${projectCallsPath()}/active`, 'GET');
-
     showCall(data);
-
     log(`Found active call ${data.id}.`);
   }
 
-  function initJanus() {
-    if (janusInitialized) return Promise.resolve();
+  // ---------- Video tiles ----------
 
-    return new Promise((resolve) => {
-      Janus.init({
-        debug: 'warn',
+  function makeTile(label, local) {
+    const tile = document.createElement('figure');
+    tile.className = local ? 'tile local' : 'tile';
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    if (local) video.muted = true; // never play our own mic back
+    const caption = document.createElement('figcaption');
+    caption.textContent = label;
+    tile.append(video, caption);
+    $('videoGrid').append(tile);
+    return { tile, video };
+  }
 
-        callback: () => {
-          janusInitialized = true;
-          resolve();
-        }
-      });
+  function playVideo(video) {
+    video.play().catch((error) => {
+      $('remotePlaybackState').textContent = 'Browser blocked playback. Click Enable remote audio.';
+      log(`Playback blocked (${error.name}). Click Enable remote audio.`, true);
     });
   }
 
-  async function connectAudio(roomId, roomPin) {
-    if (!window.Janus) {
-      throw new Error(
-        'Janus client library is unavailable. Check the Janus script request in Network/Console.'
-      );
-    }
+  async function enableRemoteAudio() {
+    const videos = Array.from($('videoGrid').querySelectorAll('.tile:not(.local) video'));
+    const results = await Promise.allSettled(videos.map((v) => v.play()));
+    const blocked = results.filter((r) => r.status === 'rejected').length;
+    $('remotePlaybackState').textContent = blocked
+      ? 'The browser still blocks playback. Check site sound permissions.'
+      : `Playing ${videos.length} remote stream${videos.length === 1 ? '' : 's'}.`;
+    log(`Remote playback enabled for ${videos.length} stream(s).`);
+  }
+
+  // ---------- Janus ----------
+
+  function initJanus() {
+    if (janusInitialized) return Promise.resolve();
+    return new Promise((resolve) => {
+      Janus.init({ debug: 'warn', callback: () => { janusInitialized = true; resolve(); } });
+    });
+  }
+
+  async function connectVideo(roomId, roomPin) {
+    if (!window.Janus) throw new Error('Janus client library is unavailable. Check the Network tab.');
 
     const server = $('janusUrl').value.trim();
+    if (!server) throw new Error('Enter the Janus WebSocket URL.');
 
-    if (!server) {
-      throw new Error('Enter the Janus WebSocket URL.');
-    }
-
-    setAudioState('Connecting…');
-
+    currentRoom = Number(roomId);
+    currentPin = roomPin || null;
+    setMediaState('Connecting…');
     await initJanus();
 
     await new Promise((resolve, reject) => {
-      // Local references so callbacks from an old session
-      // can never touch a newer session.
-      let myHandle = null;
-
       const myJanus = new Janus({
         server,
 
         success: () => myJanus.attach({
-          plugin: 'janus.plugin.audiobridge',
+          plugin: 'janus.plugin.videoroom',
 
           success: (handle) => {
-            myHandle = handle;
-            plugin = handle;
-
-            // Diagnostic: print who calls createOffer / sends an SDP.
-            const origCreateOffer = handle.createOffer.bind(handle);
-            handle.createOffer = (opts) => {
-              console.trace('[createOffer] called');
-              log('createOffer called (see Console for the stack).');
-              return origCreateOffer(opts);
-            };
-
-            const origSend = handle.send.bind(handle);
-            handle.send = (params) => {
-              if (params && params.jsep) {
-                console.trace(
-                  `[send with jsep] type=${params.jsep.type}`,
-                  params.message && params.message.request
-                );
-              }
-              return origSend(params);
-            };
-
+            pub = handle;
             const request = {
               request: 'join',
-              room: Number(roomId),
-              display: `FrietSync ${Math.random()
-                .toString(36)
-                .slice(2, 7)}`
+              ptype: 'publisher',
+              room: currentRoom,
+              display: `FrietSync ${Math.random().toString(36).slice(2, 7)}`
             };
-
-            if (roomPin) request.pin = roomPin;
-
+            if (currentPin) request.pin = currentPin;
             handle.send({ message: request });
-
             resolve();
           },
 
-          error: (error) => {
-            reject(
-              new Error(`AudioBridge attach failed: ${error}`)
-            );
-          },
+          error: (error) => reject(new Error(`VideoRoom attach failed: ${error}`)),
 
-          onmessage: (message, jsep) =>
-            onPluginMessage(myHandle, message, jsep),
+          onmessage: (message, jsep) => {
+            if (janus === myJanus) onPublisherMessage(message, jsep);
+          },
 
           onlocaltrack: (track, added) => {
-            log(`Local microphone ${added ? 'ready' : 'removed'}.`);
-
-            if (added && track.kind === 'audio') {
-              micMeter = createMeter(new MediaStream([track]));
-              startMeterUpdates();
-            } else if (!added) {
-              micMeter = null;
+            if (!localVideo) {
+              ({ tile: localTile, video: localVideo } = makeTile('You', true));
+              localVideo.srcObject = new MediaStream();
+            }
+            const stream = localVideo.srcObject;
+            if (added) {
+              stream.addTrack(track);
+              playVideo(localVideo);
+              log(`Local ${track.kind} ready.`);
+            } else {
+              stream.removeTrack(track);
             }
           },
 
-          onremotetrack: (track, mid, added) =>
-            onRemoteTrack(track, mid, added),
-
           oncleanup: () => {
-            if (plugin === myHandle) {
-              plugin = null;
-              setAudioState('Disconnected');
-            }
+            if (localTile) localTile.remove();
+            localTile = null;
+            localVideo = null;
           }
         }),
 
-        error: (error) => {
-          reject(new Error(`Janus connection failed: ${error}`));
-        },
+        error: (error) => reject(new Error(`Janus connection failed: ${error}`)),
 
         destroyed: () => {
-          if (janus === myJanus) {
-            janus = null;
-            plugin = null;
-          }
+          if (janus === myJanus) { janus = null; pub = null; }
         }
       });
-
       janus = myJanus;
     });
   }
 
-  function onPluginMessage(handle, message, jsep) {
-    console.log('[AudioBridge event]', message);
+  function onPublisherMessage(message, jsep) {
+    const event = message?.videoroom;
 
-    const event = message?.audiobridge;
-
-    if (event === 'joined' && offerStarted.has(handle)) {
-      log('Ignored a duplicate "joined" event: offer already sent.', true);
-      console.warn('[AudioBridge] duplicate joined ignored', message);
-    } else if (event === 'joined') {
-      offerStarted.add(handle);
-
-      setAudioState('Joined room — configuring microphone');
-
-      currentRoom = message.room;
-
-      log(`Joined Janus room ${message.room}.`);
-
-      handle.createOffer({
-        media: {
-          audio: true,
-          video: false
-        },
-
-        success: (offer) => {
-          log('Microphone offer created.');
-
-          handle.send({
-            message: {
-              request: 'configure',
-              muted: false
-            },
-            jsep: offer
-          });
-
-          // Diagnostic snapshots after the connection settles.
-          setTimeout(
-            () => logAudioStats('10-second snapshot'),
-            10000
-          );
-
-          setTimeout(
-            () => logAudioStats('15-second snapshot'),
-            15000
-          );
-        },
-
-        error: (error) => {
-          log(`Microphone offer failed: ${error}`, true);
-          setAudioState('Microphone error');
-        }
-      });
+    if (event === 'joined') {
+      myId = message.id;
+      myPrivateId = message.private_id;
+      log(`Joined Janus room ${message.room} as ${myId}.`);
+      setMediaState('Joined room, starting camera');
+      publishOwnFeed();
+      (message.publishers || []).forEach(addFeed);
+    } else if (event === 'destroyed') {
+      log('The room was destroyed by the server.', true);
+      leaveCall().catch((e) => log(errorMessage(e), true));
+    } else if (event === 'event') {
+      if (message.error) log(`VideoRoom error ${message.error_code}: ${message.error}`, true);
+      (message.publishers || []).forEach(addFeed);
+      if (message.leaving && message.leaving !== 'ok') removeFeed(message.leaving);
+      if (message.unpublished && message.unpublished !== 'ok') removeFeed(message.unpublished);
     }
 
-    if (event === 'event') {
-      if (message.error) {
-        log(`AudioBridge error: ${message.error}`, true);
-      }
-
-      if (message.publishers?.length) {
-        log(
-          `${message.publishers.length} existing participant(s) reported.`
-        );
-      }
-
-      if (message.leaving) {
-        log(`Participant ${message.leaving} left.`);
-      }
-
-      if (message.unpublished) {
-        log(`Participant ${message.unpublished} stopped publishing.`);
-      }
-    }
-
-    if (jsep) {
-      log(`Received remote JSEP: ${jsep.type || 'unknown type'}.`);
-
-      handle.handleRemoteJsep({ jsep });
-    }
+    if (jsep) pub.handleRemoteJsep({ jsep });
   }
 
-  // Diagnostic function: inspect this session's WebRTC audio counters.
-  function logAudioStats(label = 'Audio stats') {
-    const pc = plugin?.webrtcStuff?.pc;
-
-    if (!pc) {
-      console.warn(`[${label}] PeerConnection is not available.`);
-      log(`[${label}] PeerConnection is not available.`, true);
-      return;
-    }
-
-    pc.getStats()
-      .then((stats) => {
-        const audioReports = [];
-
-        stats.forEach((report) => {
-          if (
-            (report.type === 'inbound-rtp' ||
-              report.type === 'outbound-rtp' ||
-              report.type === 'media-source') &&
-            (report.kind === 'audio' ||
-              report.mediaType === 'audio')
-          ) {
-            audioReports.push({
-              type: report.type,
-              kind: report.kind || report.mediaType,
-              bytesReceived: report.bytesReceived ?? 0,
-              bytesSent: report.bytesSent ?? 0,
-              packetsReceived: report.packetsReceived ?? 0,
-              packetsSent: report.packetsSent ?? 0,
-              packetsLost: report.packetsLost ?? 0,
-              audioLevel: report.audioLevel ?? '',
-              totalAudioEnergy: report.totalAudioEnergy ?? ''
-            });
-          }
-        });
-
-        console.group(`[${label}] WebRTC audio stats`);
-        console.table(audioReports);
-        console.groupEnd();
-
-        log(
-          `[${label}] Logged ${audioReports.length} audio RTP report(s). Check the browser Console.`
-        );
-      })
-      .catch((error) => {
-        console.error(`[${label}] getStats failed:`, error);
-
-        log(
-          `[${label}] getStats failed: ${errorMessage(error)}`,
-          true
-        );
-      });
-  }
-
-  // Diagnostic: ask Janus who is in the room and their muted state.
-  function listParticipants() {
-    if (!plugin || currentRoom == null) {
-      console.warn('[listparticipants] not joined yet.');
-      return;
-    }
-
-    plugin.send({
-      message: { request: 'listparticipants', room: currentRoom },
-
-      success: (result) => {
-        console.log('[listparticipants]', result);
-
-        console.table(
-          (result.participants || []).map((p) => ({
-            id: p.id,
-            display: p.display,
-            muted: p.muted,
-            setup: p.setup,
-            talking: p.talking
-          }))
-        );
+  function publishOwnFeed() {
+    pub.createOffer({
+      tracks: [
+        { type: 'audio', capture: true, recv: false },
+        // Modest capture size keeps bandwidth low on the small server.
+        { type: 'video', capture: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 } }, recv: false }
+      ],
+      success: (offer) => {
+        log('Camera and microphone offer created.');
+        pub.send({ message: { request: 'configure', audio: true, video: true }, jsep: offer });
+        setMediaState('Connected');
       },
-
       error: (error) => {
-        console.error('[listparticipants] failed:', error);
+        log(`Could not start camera or microphone: ${error}`, true);
+        setMediaState('Camera or microphone error');
       }
     });
   }
 
-  // Type diag() in the browser Console after both people have joined.
-  window.diag = () => {
-    logAudioStats('manual');
-    listParticipants();
-  };
+  // One subscriber handle per remote publisher.
+  function addFeed(publisher) {
+    if (!publisher || publisher.id === myId || feeds.has(publisher.id)) return;
 
-  function onRemoteTrack(track, mid, added) {
-    if (!track || track.kind !== 'audio') return;
+    const label = publisher.display || `User ${publisher.id}`;
+    const { tile, video } = makeTile(label, false);
+    const feed = { id: publisher.id, handle: null, tile, video, stream: new MediaStream() };
+    video.srcObject = feed.stream;
+    feeds.set(publisher.id, feed);
+    log(`${label} is in the room. Subscribing.`);
 
-    const id = `remote-${mid}`;
+    janus.attach({
+      plugin: 'janus.plugin.videoroom',
 
-    log(
-      `Remote audio track ${id}: ${added ? 'added' : 'removed'}, ` +
-      `state=${track.readyState}, enabled=${track.enabled}, muted=${track.muted}`
-    );
+      success: (handle) => {
+        feed.handle = handle;
+        const request = {
+          request: 'join',
+          ptype: 'subscriber',
+          room: currentRoom,
+          streams: [{ feed: publisher.id }]
+        };
+        if (myPrivateId) request.private_id = myPrivateId;
+        if (currentPin) request.pin = currentPin;
+        handle.send({ message: request });
+      },
 
-    let audio = document.getElementById(id);
+      error: (error) => log(`Subscriber attach failed: ${error}`, true),
 
-    if (added) {
-      if (!audio) {
-        audio = document.createElement('audio');
-        audio.id = id;
-        audio.autoplay = true;
-        audio.playsInline = true;
-
-        $('remoteAudio').append(audio);
-
-        audio.addEventListener('playing', () => {
-          $('remotePlaybackState').textContent =
-            'Remote audio is playing in this browser.';
-
-          log(`Remote audio ${id} is playing.`);
+      onmessage: (message, jsep) => {
+        if (message.error) log(`Subscriber error ${message.error_code}: ${message.error}`, true);
+        if (!jsep) return;
+        feed.handle.createAnswer({
+          jsep,
+          tracks: [{ type: 'data' }],
+          success: (answer) => feed.handle.send({
+            message: { request: 'start', room: currentRoom },
+            jsep: answer
+          }),
+          error: (error) => log(`Answer failed: ${error}`, true)
         });
+      },
 
-        audio.addEventListener('waiting', () => {
-          $('remotePlaybackState').textContent =
-            'Remote audio track exists but is waiting for media.';
-        });
-
-        audio.addEventListener('error', () => {
-          $('remotePlaybackState').textContent =
-            'Browser could not play the remote audio element. Click Enable remote audio.';
-
-          log(
-            `Remote audio ${id} playback error${audio.error ? ` (code ${audio.error.code})` : ''}.`,
-            true
-          );
-        });
+      onremotetrack: (track, mid, added) => {
+        if (added) {
+          feed.stream.addTrack(track);
+          playVideo(feed.video);
+          log(`Remote ${track.kind} from ${label} received.`);
+        } else {
+          feed.stream.removeTrack(track);
+        }
       }
-
-      audio.srcObject = new MediaStream([track]);
-
-      track.onunmute = () => {
-        log(`Remote audio ${id} is receiving unmuted media.`);
-      };
-
-      track.onmute = () => {
-        log(`Remote audio ${id} stopped receiving media.`, true);
-      };
-
-      track.onended = () => {
-        log(`Remote audio ${id} ended.`, true);
-      };
-
-      audio.volume = Number($('speakerVolume').value) / 100;
-
-      $('enableAudioButton').disabled = false;
-
-      $('remotePlaybackState').textContent =
-        'Remote audio track received. Checking browser playback…';
-
-      const meter = createMeter(new MediaStream([track]));
-
-      if (meter) incomingMeters.set(id, meter);
-
-      startMeterUpdates();
-
-      audio.play().catch((error) => {
-        $('remotePlaybackState').textContent =
-          'Remote track is connected, but browser playback is blocked. Click Enable remote audio.';
-
-        log(
-          `Remote audio ${id} arrived but playback was blocked (${error.name}). ` +
-          `${remotePlaybackEnabled ? 'Check browser sound permissions and Console.' : 'Click Enable remote audio.'}`,
-          true
-        );
-      });
-
-      log(`Remote audio track ${id} received from Janus.`);
-    } else if (audio) {
-      audio.srcObject = null;
-      audio.remove();
-
-      incomingMeters.delete(id);
-
-      log(`Remote audio track ${id} ended.`);
-
-      if (!incomingMeters.size) {
-        $('remotePlaybackState').textContent =
-          'No remote audio tracks are currently active.';
-      }
-    }
+    });
   }
 
-  async function enableRemoteAudio() {
-    remotePlaybackEnabled = true;
-
-    $('enableAudioButton').textContent = 'Remote audio enabled';
-
-    const tracks = Array.from(
-      $('remoteAudio').querySelectorAll('audio')
-    );
-
-    if (!tracks.length) {
-      $('remotePlaybackState').textContent =
-        'Remote playback enabled. Waiting for another participant’s audio track.';
-
-      log('Remote audio playback enabled; waiting for participants.');
-
-      return;
-    }
-
-    if (audioContext && audioContext.state === 'suspended') {
-      await audioContext.resume();
-    }
-
-    const results = await Promise.allSettled(
-      tracks.map((audio) => audio.play())
-    );
-
-    const blocked = results.filter(
-      (result) => result.status === 'rejected'
-    );
-
-    if (blocked.length) {
-      $('remotePlaybackState').textContent =
-        'The browser still blocks playback. Check site sound permissions and the Console.';
-
-      throw new Error(
-        `Could not start ${blocked.length} remote audio stream(s): ` +
-        `${blocked[0].reason?.message || blocked[0].reason}`
-      );
-    }
-
-    $('remotePlaybackState').textContent =
-      `Playing ${tracks.length} remote audio stream${tracks.length === 1 ? '' : 's'}.`;
-
-    log(`Remote audio playback enabled for ${tracks.length} stream(s).`);
+  function removeFeed(id) {
+    const feed = feeds.get(Number(id)) || feeds.get(id);
+    if (!feed) return;
+    try { feed.handle?.detach(); } catch (_) { /* already gone */ }
+    feed.video.srcObject = null;
+    feed.tile.remove();
+    feeds.delete(feed.id);
+    log(`Participant ${feed.id} left.`);
   }
+
+  async function disconnectMedia() {
+    feeds.forEach((_, id) => removeFeed(id));
+
+    if (pub) {
+      try { pub.send({ message: { request: 'leave' } }); } catch (_) { /* connection may be gone */ }
+    }
+    if (janus) {
+      try { janus.destroy(); } catch (_) { /* connection may be gone */ }
+    }
+
+    // Make sure the camera light goes off.
+    localVideo?.srcObject?.getTracks().forEach((t) => t.stop());
+    localTile?.remove();
+
+    janus = null;
+    pub = null;
+    myId = null;
+    myPrivateId = null;
+    localTile = null;
+    localVideo = null;
+
+    $('videoGrid').replaceChildren();
+    $('muteButton').textContent = 'Mute microphone';
+    $('cameraButton').textContent = 'Turn camera off';
+    setMediaState('Disconnected');
+  }
+
+  // ---------- Call actions ----------
 
   async function joinCall() {
     if (connecting) return;
     connecting = true;
-
     try {
-      // Tear down any old session so we never end up with two.
-      if (janus || plugin) await disconnectAudio();
+      if (janus || pub) await disconnectMedia();
 
       const callId = $('callId').value.trim();
+      if (!callId) throw new Error('Enter a call ID or find an active call first.');
 
-      if (!callId) {
-        throw new Error('Enter a call ID or find an active call first.');
-      }
-
-      const data = await api(
-        `${projectCallsPath()}/${encodeURIComponent(callId)}/join`
-      );
-
+      const data = await api(`${projectCallsPath()}/${encodeURIComponent(callId)}/join`);
       showCall(data);
-
       joinedBackend = true;
-
       log(`Backend authorized join for call ${data.id}.`);
 
-      await connectAudio(data.roomId, data.roomPin);
+      await connectVideo(data.roomId, data.roomPin);
     } finally {
       connecting = false;
     }
   }
 
-  async function disconnectAudio() {
-    if (plugin) {
-      try {
-        plugin.send({ message: { request: 'leave' } });
-      } catch (_) {
-        // Connection may already be gone.
-      }
-    }
-
-    if (janus) {
-      try {
-        janus.destroy();
-      } catch (_) {
-        // Connection may already be gone.
-      }
-    }
-
-    janus = null;
-    plugin = null;
-
-    $('remoteAudio').replaceChildren();
-
-    stopMeterUpdates();
-
-    $('enableAudioButton').disabled = false;
-    $('enableAudioButton').textContent = 'Enable remote audio';
-
-    remotePlaybackEnabled = false;
-
-    $('remotePlaybackState').textContent =
-      'Disconnected. Click Enable remote audio before joining again.';
-
-    setAudioState('Disconnected');
-  }
-
   async function leaveCall() {
     const callId = $('callId').value.trim();
-
-    await disconnectAudio();
-
+    await disconnectMedia();
     if (joinedBackend && callId) {
       await api(`${projectCallsPath()}/${encodeURIComponent(callId)}/leave`);
     }
-
     joinedBackend = false;
-
     setCallControls(false);
-
     log('Left the call.');
   }
 
   async function endCall() {
     const callId = $('callId').value.trim();
-
-    if (!callId) {
-      throw new Error('There is no call ID to end.');
-    }
-
-    await disconnectAudio();
-
-    const data = await api(
-      `${projectCallsPath()}/${encodeURIComponent(callId)}/end`
-    );
-
+    if (!callId) throw new Error('There is no call ID to end.');
+    await disconnectMedia();
+    const data = await api(`${projectCallsPath()}/${encodeURIComponent(callId)}/end`);
     showCall(data);
-
     setCallControls(false);
-
     joinedBackend = false;
-
-    setAudioState('Call ended');
-
+    setMediaState('Call ended');
     log('Call ended and Janus room destroyed.');
   }
 
-  async function toggleMute() {
-    if (!plugin) return;
+  function toggleMute() {
+    if (!pub) return;
+    if (pub.isAudioMuted()) pub.unmuteAudio(); else pub.muteAudio();
+    $('muteButton').textContent = pub.isAudioMuted() ? 'Unmute microphone' : 'Mute microphone';
+  }
 
-    muted = !muted;
-
-    plugin.send({
-      message: {
-        request: 'configure',
-        muted
-      }
-    });
-
-    $('muteButton').textContent =
-      muted ? 'Unmute microphone' : 'Mute microphone';
-
-    setAudioState(
-      muted ? 'Connected · microphone muted' : 'Connected · microphone on'
-    );
+  function toggleCamera() {
+    if (!pub) return;
+    if (pub.isVideoMuted()) pub.unmuteVideo(); else pub.muteVideo();
+    $('cameraButton').textContent = pub.isVideoMuted() ? 'Turn camera on' : 'Turn camera off';
   }
 
   async function run(action) {
@@ -889,16 +451,8 @@
   $('leaveButton').addEventListener('click', () => run(leaveCall));
   $('endButton').addEventListener('click', () => run(endCall));
   $('muteButton').addEventListener('click', () => run(toggleMute));
-  $('hangupButton').addEventListener('click', () => run(leaveCall));
+  $('cameraButton').addEventListener('click', () => run(toggleCamera));
   $('enableAudioButton').addEventListener('click', () => run(enableRemoteAudio));
-
-  $('speakerVolume').addEventListener('input', applySpeakerVolume);
-
-  $('clearLogButton').addEventListener('click', () =>
-    logList.replaceChildren()
-  );
-
-  window.addEventListener('beforeunload', () => {
-    if (janus) janus.destroy();
-  });
+  $('clearLogButton').addEventListener('click', () => logList.replaceChildren());
+  window.addEventListener('beforeunload', () => { if (janus) janus.destroy(); });
 })();
