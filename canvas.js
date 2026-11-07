@@ -127,7 +127,6 @@
 
       c.onConnect = () => {
         log('STOMP connected.');
-        c.subscribe('/user/queue/canvas-created', onCanvasCreated);
         c.subscribe('/user/queue/canvas-issue-created', onIssueCreated);
         c.subscribe('/user/queue/canvas-errors', onCanvasError);
         resolve();
@@ -240,26 +239,37 @@
     log(`Loaded ${canvasesCache.length} canvas(es).`);
   }
 
-  function onCanvasCreated(message) {
-    let reply;
-    try { reply = JSON.parse(message.body); } catch (_) { log(`Canvas created: ${message.body}`); return; }
-    const created = reply.canvas || reply; // CanvasDetailResponse: { canvas, elements }
-    log(`Canvas created: "${created.name || ''}" (${created.id}). Now subscribing for live updates.`);
-    if (created.id && !canvasesCache.some((c) => c.id === created.id)) canvasesCache.push(created);
-    fillSelect(created.id);
-    if (created.id) run(openCanvas);
+  // Create, rename and delete use REST. STOMP is only for live board operations.
+
+  function setCanvasName(id, name) {
+    const cached = canvasesCache.find((c) => c.id === id);
+    if (cached) cached.name = name;
+    fillSelect($('canvasSelect').value);
+    if (id === canvasId) {
+      canvasName = name;
+      setLive(`${pollMode ? 'Polling every 2s' : 'Live'} · ${name}`);
+    }
+  }
+
+  function removeCanvasLocally(id) {
+    canvasesCache = canvasesCache.filter((c) => c.id !== id);
+    fillSelect('');
+    if (id === canvasId) disconnectAll();
+    else updateControls();
   }
 
   async function createCanvas() {
     const pid = projectId();
     const name = (window.prompt('Name for the new canvas (max 200 characters)', 'Test canvas') || '').trim().slice(0, 200);
     if (!name) return;
-    await ensureStomp();
-    send(`/app/projects/${enc(pid)}/canvases/create`, { name });
-    log(`Requested new canvas "${name}".`);
+    const reply = await api(`/api/v1/projects/${enc(pid)}/canvases`, 'POST', { name }); // { canvas, elements }
+    const created = reply?.canvas || reply;
+    if (!created?.id) throw new Error('The server created a canvas but returned no canvas ID. Use Load canvases to find it.');
+    log(`Canvas created: "${created.name || name}" (${created.id}).`);
+    if (!canvasesCache.some((c) => c.id === created.id)) canvasesCache.push(created);
+    fillSelect(created.id);
+    await openCanvas();
   }
-
-  // ---------- Open a canvas ----------
 
   // Asks for a receipt on SUBSCRIBE so we know whether the server accepted it.
   function trySubscribe(id) {
@@ -391,19 +401,24 @@
     }
   }
 
-  function renameCanvas() {
+  async function renameCanvas() {
     if (!canvasId) return;
-    const name = (window.prompt('New canvas name', canvasName) || '').trim();
+    const id = canvasId;
+    const name = (window.prompt('New canvas name (max 200 characters)', canvasName) || '').trim().slice(0, 200);
     if (!name || name === canvasName) return;
-    send(`/app/canvases/${enc(canvasId)}/rename`, { name });
-    log(`Requested rename to "${name}".`);
+    const reply = await api(`/api/v1/canvases/${enc(id)}`, 'PATCH', { name });
+    const updated = reply?.canvas || reply;
+    setCanvasName(id, updated?.name || name);
+    log(`Canvas renamed to "${updated?.name || name}".`);
   }
 
-  function deleteCanvas() {
+  async function deleteCanvas() {
     if (!canvasId) return;
+    const id = canvasId;
     if (!window.confirm(`Delete canvas "${canvasName}" for everyone? This cannot be undone.`)) return;
-    send(`/app/canvases/${enc(canvasId)}/delete`);
-    log('Requested canvas deletion.');
+    await api(`/api/v1/canvases/${enc(id)}`, 'DELETE'); // 204, no body
+    log('Canvas deleted.');
+    removeCanvasLocally(id);
   }
 
   // ---------- Incoming events ----------
@@ -446,19 +461,14 @@
       if (selectedId && !items.has(selectedId)) selectedId = null;
       log(`${ids.length} item(s) deleted.`);
     } else if (type === 'CANVAS_RENAMED') {
-      canvasName = event.name || event.newName || payload.name || canvasName;
-      const option = Array.from($('canvasSelect').options).find((o) => o.value === canvasId);
-      if (option) option.textContent = `${canvasName}  (${String(canvasId).slice(0, 8)})`;
-      const cached = canvasesCache.find((c) => c.id === canvasId);
-      if (cached) cached.name = canvasName;
-      setLive(`Live · ${canvasName}`);
-      log(`Canvas renamed to "${canvasName}".`);
+      const name = event.name || event.newName || payload.name;
+      if (name && name !== canvasName) {
+        setCanvasName(canvasId, name);
+        log(`Canvas renamed to "${name}".`);
+      }
     } else if (type === 'CANVAS_DELETED') {
       log('This canvas was deleted.', true);
-      const deletedId = canvasId;
-      canvasesCache = canvasesCache.filter((c) => c.id !== deletedId);
-      fillSelect('');
-      disconnectAll();
+      removeCanvasLocally(canvasId);
       return;
     } else {
       log(`Unrecognised canvas event: ${message_preview(event)}`, true);
@@ -866,8 +876,8 @@
   $('newCanvasButton').addEventListener('click', () => run(createCanvas));
   $('openCanvasButton').addEventListener('click', () => run(openCanvas));
   $('closeCanvasButton').addEventListener('click', () => run(async () => disconnectAll()));
-  $('renameCanvasButton').addEventListener('click', () => run(async () => renameCanvas()));
-  $('deleteCanvasButton').addEventListener('click', () => run(async () => deleteCanvas()));
+  $('renameCanvasButton').addEventListener('click', () => run(renameCanvas));
+  $('deleteCanvasButton').addEventListener('click', () => run(deleteCanvas));
   window.addEventListener('beforeunload', () => { try { client?.deactivate(); } catch (_) { /* closing */ } });
 
   syncWsField();
