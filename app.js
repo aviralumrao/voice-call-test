@@ -63,7 +63,7 @@
     return `/api/v1/projects/${encodeURIComponent(projectId)}/calls`;
   }
 
-  async function api(path, method = 'POST') {
+  async function api(path, method = 'POST', payload = null) {
     const token = $('token').value.trim();
     if (!token) throw new Error('Enter a bearer token first.');
 
@@ -75,7 +75,12 @@
       response = await fetch(url, {
         method,
         mode: 'cors',
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          ...(payload ? { 'Content-Type': 'application/json' } : {})
+        },
+        body: payload ? JSON.stringify(payload) : undefined,
         signal: AbortSignal.timeout(20000)
       });
     } catch (error) {
@@ -121,16 +126,16 @@
   }
 
   async function startCall() {
-    // Assumption: the backend picks the Janus plugin from a "type" query param.
-    // If your controller reads it differently, change this one line.
     const type = $('callType').value;
-    const data = await api(`${projectCallsPath()}?type=${encodeURIComponent(type)}`);
+    const data = await api(projectCallsPath(), 'POST', { type });
     showCall(data);
-    log(`Call started. Call ID ${data.id}; room ${data.roomId}.`);
+    log(`Call started (${type}). Call ID ${data.id}; room ${data.roomId}.`);
   }
 
   async function findActiveCall() {
-    const data = await api(`${projectCallsPath()}/active`, 'GET');
+    // The backend looks up active calls per type and defaults to VOICE.
+    const type = $('callType').value;
+    const data = await api(`${projectCallsPath()}/active?type=${encodeURIComponent(type)}`, 'GET');
     showCall(data);
     log(`Found active call ${data.id}.`);
   }
