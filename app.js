@@ -450,6 +450,48 @@
     }
   }
 
+  // ---------- Nav bar (Video call / Live canvas) ----------
+
+  const views = {
+    video: {
+      eyebrow: 'FRIETSYNC · VIDEOROOM',
+      title: 'Video call test',
+      intro: 'Open two browser windows (or one on your phone) to test a call. Each participant needs a valid FrietSync bearer token and project membership.',
+      footer: "Video needs camera and microphone permission and a secure context (HTTPS or localhost). The server's UDP ports 10000-10200 must be reachable."
+    },
+    canvas: {
+      eyebrow: 'FRIETSYNC · CANVAS',
+      title: 'Live canvas test',
+      intro: 'Open the same canvas in two browser windows and edit in one to watch the other update. Editing needs an editor role; viewing needs project membership.',
+      footer: 'Edits are sent over STOMP and the canvas only changes when the server broadcasts the result, so what you see is what the backend stored.'
+    }
+  };
+
+  function showView(name) {
+    if (!views[name]) name = 'video';
+    Object.keys(views).forEach((key) => {
+      $(`view-${key}`).hidden = key !== name;
+      const tab = $(key === 'video' ? 'tabVideo' : 'tabCanvas');
+      tab.classList.toggle('active', key === name);
+      tab.setAttribute('aria-selected', String(key === name));
+    });
+    $('pageEyebrow').textContent = views[name].eyebrow;
+    $('pageTitle').textContent = views[name].title;
+    $('pageIntro').textContent = views[name].intro;
+    $('pageFooter').textContent = views[name].footer;
+    if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
+    window.dispatchEvent(new CustomEvent('frietsync:view', { detail: name }));
+  }
+
+  document.querySelectorAll('.nav-tab').forEach((tab) => {
+    tab.addEventListener('click', () => showView(tab.dataset.view));
+  });
+  window.addEventListener('hashchange', () => showView(location.hash.slice(1)));
+
+  // Shared helpers for canvas.js
+  window.FrietSync = { log, api, run, errorMessage, validatedApiBase, showView };
+  showView(location.hash.slice(1) || 'video');
+
   $('startButton').addEventListener('click', () => run(startCall));
   $('activeButton').addEventListener('click', () => run(findActiveCall));
   $('joinButton').addEventListener('click', () => run(joinCall));

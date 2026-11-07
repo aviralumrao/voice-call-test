@@ -3,18 +3,30 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>FrietSync Video Call Test</title>
+    <title>FrietSync Test Console</title>
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/8.2.3/adapter.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/janus-gateway@1.2.2/src/janus.js" onerror="document.getElementById('appStatus').textContent='Could not load Janus from jsDelivr. Check the Network tab.';document.getElementById('appStatus').className='error-banner';"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js" onerror="document.getElementById('appStatus').textContent='Could not load the STOMP client from jsDelivr. The canvas test needs it.';document.getElementById('appStatus').className='error-banner';"></script>
     <script defer src="app.js" onerror="document.getElementById('appStatus').textContent='app.js failed to load.';document.getElementById('appStatus').className='error-banner';"></script>
+    <script defer src="canvas.js" onerror="document.getElementById('appStatus').textContent='canvas.js failed to load.';document.getElementById('appStatus').className='error-banner';"></script>
   </head>
   <body>
+    <nav class="navbar" aria-label="Test sections">
+      <div class="nav-inner">
+        <span class="brand">FrietSync</span>
+        <div class="nav-tabs" role="tablist">
+          <button type="button" class="nav-tab active" id="tabVideo" data-view="video" role="tab" aria-selected="true">Video call</button>
+          <button type="button" class="nav-tab" id="tabCanvas" data-view="canvas" role="tab" aria-selected="false">Live canvas</button>
+        </div>
+      </div>
+    </nav>
+
     <main class="shell">
       <header>
-        <p class="eyebrow">FRIETSYNC · VIDEOROOM</p>
-        <h1>Video call test</h1>
-        <p class="intro">Open two browser windows (or one on your phone) to test a call. Each participant needs a valid FrietSync bearer token and project membership.</p>
+        <p class="eyebrow" id="pageEyebrow">FRIETSYNC · VIDEOROOM</p>
+        <h1 id="pageTitle">Video call test</h1>
+        <p class="intro" id="pageIntro">Open two browser windows (or one on your phone) to test a call. Each participant needs a valid FrietSync bearer token and project membership.</p>
         <p id="appStatus" class="app-status" role="status" aria-live="polite">Loading controls…</p>
       </header>
 
@@ -24,43 +36,123 @@
         <label>Janus WebSocket URL<input id="janusUrl" value="wss://janus.frietsync.live/" placeholder="wss://janus.example.com"></label>
         <label>Project ID<input id="projectId" autocomplete="off" placeholder="Project UUID"></label>
         <label>Bearer token<input id="token" type="password" autocomplete="off" placeholder="Paste access token"></label>
-        <p class="hint">Settings are kept only in this page and are not saved to disk.</p>
+        <p class="hint">Settings are shared by both tests, kept only in this page and not saved to disk.</p>
       </section>
 
-      <section class="panel">
-        <h2>Call</h2>
-        <label>Call type (used to start and to find an active call)
-          <select id="callType"><option value="VIDEO">VIDEO</option><option value="VOICE">VOICE</option></select>
-        </label>
-        <div class="actions">
-          <button id="startButton" class="primary">Start new call</button>
-          <button id="activeButton">Find active call</button>
-        </div>
-        <label>Call ID<input id="callId" autocomplete="off" placeholder="Created or active call UUID"></label>
-        <div class="actions">
-          <button id="joinButton">Join call</button>
-          <button id="leaveButton" disabled>Leave call</button>
-          <button id="endButton" class="danger" disabled>End call</button>
-        </div>
-        <div class="call-details" aria-live="polite">
-          <div><span>Room ID</span><code id="roomId">—</code></div>
-          <div><span>Room PIN</span><code id="roomPin">—</code></div>
-          <div><span>Media</span><strong id="mediaState">Not connected</strong></div>
-        </div>
-        <div class="actions">
-          <button id="muteButton" disabled>Mute microphone</button>
-          <button id="cameraButton" disabled>Turn camera off</button>
-          <button id="enableAudioButton">Enable remote audio</button>
-        </div>
-        <p id="remotePlaybackState" class="hint" role="status" aria-live="polite">If remote video or sound does not start, click Enable remote audio.</p>
-        <div id="videoGrid" class="video-grid" aria-label="Participants"></div>
-      </section>
+      <!-- ===================== VIDEO VIEW ===================== -->
+      <div id="view-video" class="view">
+        <section class="panel">
+          <h2>Call</h2>
+          <label>Call type (used to start and to find an active call)
+            <select id="callType"><option value="VIDEO">VIDEO</option><option value="VOICE">VOICE</option></select>
+          </label>
+          <div class="actions">
+            <button id="startButton" class="primary">Start new call</button>
+            <button id="activeButton">Find active call</button>
+          </div>
+          <label>Call ID<input id="callId" autocomplete="off" placeholder="Created or active call UUID"></label>
+          <div class="actions">
+            <button id="joinButton">Join call</button>
+            <button id="leaveButton" disabled>Leave call</button>
+            <button id="endButton" class="danger" disabled>End call</button>
+          </div>
+          <div class="call-details" aria-live="polite">
+            <div><span>Room ID</span><code id="roomId">—</code></div>
+            <div><span>Room PIN</span><code id="roomPin">—</code></div>
+            <div><span>Media</span><strong id="mediaState">Not connected</strong></div>
+          </div>
+          <div class="actions">
+            <button id="muteButton" disabled>Mute microphone</button>
+            <button id="cameraButton" disabled>Turn camera off</button>
+            <button id="enableAudioButton">Enable remote audio</button>
+          </div>
+          <p id="remotePlaybackState" class="hint" role="status" aria-live="polite">If remote video or sound does not start, click Enable remote audio.</p>
+          <div id="videoGrid" class="video-grid" aria-label="Participants"></div>
+        </section>
+      </div>
+
+      <!-- ===================== CANVAS VIEW ===================== -->
+      <div id="view-canvas" class="view" hidden>
+        <section class="panel">
+          <h2>Canvas session</h2>
+          <label>STOMP WebSocket URL (derived from the API URL, edit if your endpoint differs)
+            <input id="wsUrl" placeholder="wss://api.example.com/ws">
+          </label>
+          <div class="actions">
+            <button id="loadCanvasesButton" class="primary">Load canvases</button>
+            <button id="newCanvasButton">Create canvas</button>
+          </div>
+          <label>Canvas
+            <select id="canvasSelect"><option value="">— load canvases first —</option></select>
+          </label>
+          <div class="actions">
+            <button id="openCanvasButton">Open &amp; go live</button>
+            <button id="closeCanvasButton" disabled>Disconnect</button>
+            <button id="renameCanvasButton" disabled>Rename</button>
+            <button id="deleteCanvasButton" class="danger" disabled>Delete canvas</button>
+          </div>
+          <div class="call-details" aria-live="polite">
+            <div><span>Live status</span><strong id="canvasLive">Not connected</strong></div>
+            <div><span>Items</span><code id="canvasCount">0</code></div>
+            <div><span>Revision</span><code id="canvasRevision">—</code></div>
+          </div>
+        </section>
+
+        <section class="panel canvas-panel">
+          <div class="canvas-toolbar" role="toolbar" aria-label="Canvas tools">
+            <div class="tool-group" id="toolGroup">
+              <button type="button" class="tool active" data-tool="select" title="Select / move / pan">Select</button>
+              <button type="button" class="tool" data-tool="STICKY_NOTE" title="Click the canvas to add a sticky note">Sticky note</button>
+              <button type="button" class="tool" data-tool="SHAPE" title="Click the canvas to add a shape">Shape</button>
+              <button type="button" class="tool" data-tool="TEXT" title="Click the canvas to add text">Text</button>
+              <button type="button" class="tool" data-tool="ARROW" title="Drag on the canvas to draw an arrow. Start or end on an item to connect it">Arrow</button>
+            </div>
+            <div class="tool-group">
+              <button type="button" id="zoomOutButton" aria-label="Zoom out">−</button>
+              <button type="button" id="zoomResetButton" aria-label="Reset view"><span id="zoomLabel">100%</span></button>
+              <button type="button" id="zoomInButton" aria-label="Zoom in">+</button>
+            </div>
+          </div>
+
+          <div class="canvas-stage" id="canvasStage">
+            <svg id="canvasSvg" role="application" aria-label="Live canvas" tabindex="0">
+              <defs>
+                <pattern id="gridDots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#cdd3c5"/></pattern>
+                <marker id="arrowHead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#536b3c"/></marker>
+              </defs>
+              <rect id="gridRect" width="100%" height="100%" fill="url(#gridDots)"/>
+              <g id="world"></g>
+            </svg>
+            <p class="canvas-empty" id="canvasEmpty">Open a canvas to start drawing.</p>
+          </div>
+
+          <div class="inspector" id="inspector" aria-live="polite">
+            <p class="hint" id="inspectorHint">Nothing selected. Pick a tool, then click or drag on the canvas. Drag empty space to pan; scroll to zoom.</p>
+            <div class="inspector-fields" id="inspectorFields" hidden>
+              <label>Text<input id="inspText" maxlength="2000" placeholder="Item text"></label>
+              <label>Color<input id="inspColor" maxlength="7" placeholder="#fde68a"></label>
+              <label id="inspShapeWrap">Shape
+                <select id="inspShape">
+                  <option value="rectangle">rectangle</option>
+                  <option value="ellipse">ellipse</option>
+                  <option value="diamond">diamond</option>
+                </select>
+              </label>
+            </div>
+            <div class="actions" id="inspectorActions" hidden>
+              <button type="button" id="inspFrontButton">Bring to front</button>
+              <button type="button" id="inspIssueButton">Convert to issue</button>
+              <button type="button" id="inspDeleteButton" class="danger">Delete item</button>
+            </div>
+          </div>
+        </section>
+      </div>
 
       <section class="panel log-panel">
         <div class="log-heading"><h2>Activity</h2><button id="clearLogButton" class="quiet">Clear</button></div>
         <ol id="log" aria-live="polite"></ol>
       </section>
-      <footer>Video needs camera and microphone permission and a secure context (HTTPS or localhost). The server's UDP ports 10000-10200 must be reachable.</footer>
+      <footer id="pageFooter">Video needs camera and microphone permission and a secure context (HTTPS or localhost). The server's UDP ports 10000-10200 must be reachable.</footer>
     </main>
   </body>
 </html>
