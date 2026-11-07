@@ -32,6 +32,7 @@
   let pollTimer = null;
   let polling = false;
   let lastPollError = '';
+  let lastCommand = '';         // destination of the most recent SEND, for error diagnosis
   let renderQueued = false;
   const items = new Map();      // id -> item (server shape)
   const view = { x: 40, y: 40, k: 1 };
@@ -134,6 +135,10 @@
       c.onStompError = (frame) => {
         const detail = frame.headers?.message || frame.body || 'unknown error';
         log(`STOMP error: ${detail}`, true);
+        if (frame.body && frame.body !== detail) log(`STOMP error body: ${String(frame.body).slice(0, 400)}`, true);
+        if (lastCommand) {
+          log(`Last command sent: ${lastCommand}. A generic "Failed to send message" error hides the real cause: check the token, project access and role, and the backend logs. If it happened right after a canvas was created, the subscription to /topic/canvases/{id} is the more likely culprit.`, true);
+        }
         if (subscribeWatch) {
           // The server refused a SUBSCRIBE frame and drops the connection after an ERROR frame.
           const watcher = subscribeWatch;
@@ -169,7 +174,12 @@
   // Pass no body for commands that take none (deletes).
   function send(destination, body) {
     if (!client || !client.connected) throw new Error('Not connected. Open a canvas first.');
-    client.publish({ destination, body: body === undefined ? '' : JSON.stringify(body) });
+    lastCommand = destination;
+    client.publish({
+      destination,
+      headers: { 'content-type': 'application/json' },
+      body: body === undefined ? '' : JSON.stringify(body)
+    });
     if (pollMode) setTimeout(pollOnce, 400); // no broadcasts in poll mode, so re-read after each command
   }
 
@@ -180,6 +190,7 @@
   }
 
   function resetSession() {
+    lastCommand = '';
     stopPolling();
     pollMode = false;
     topicSub = null;
