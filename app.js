@@ -63,12 +63,12 @@
     return `/api/v1/projects/${encodeURIComponent(projectId)}/calls`;
   }
 
-  async function api(path, method = 'POST', payload = null) {
+  async function api(path, method = 'POST', payload = null, opts = {}) {
     const token = $('token').value.trim();
     if (!token) throw new Error('Enter a bearer token first.');
 
     const url = `${validatedApiBase()}${path}`;
-    log(`Sending ${method} ${url}`);
+    if (!opts.quiet) log(`Sending ${method} ${url}`);
 
     let response;
     try {
@@ -90,7 +90,7 @@
       throw new Error(`Could not complete ${method} ${url}. Check CORS, DNS/TLS and the API URL. (${errorMessage(error)})`);
     }
 
-    log(`Received HTTP ${response.status} ${response.statusText || ''}`.trim(), !response.ok);
+    if (!opts.quiet || !response.ok) log(`Received HTTP ${response.status} ${response.statusText || ''}`.trim(), !response.ok);
 
     const text = await response.text();
     let body = null;

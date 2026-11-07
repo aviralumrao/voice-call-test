@@ -27,6 +27,11 @@
   let selectedId = null;
   let drag = null;
   let wsEdited = false;
+  let subscribeWatch = null;    // resolver while waiting to learn if a topic subscription was accepted
+  let pollMode = false;         // true when the server rejected the live topic and we refresh by polling
+  let pollTimer = null;
+  let polling = false;
+  let lastPollError = '';
   let renderQueued = false;
   const items = new Map();      // id -> item (server shape)
   const view = { x: 40, y: 40, k: 1 };
@@ -78,7 +83,13 @@
 
   function setLive(text) { $('canvasLive').textContent = text; }
 
+  function refreshRevision() {
+    const revs = Array.from(items.values(), (it) => it.revision).filter((r) => typeof r === 'number');
+    revision = revs.length ? Math.max(...revs) : null;
+  }
+
   function updateControls() {
+    refreshRevision();
     const open = Boolean(canvasId);
     $('closeCanvasButton').disabled = !client;
     $('renameCanvasButton').disabled = !open;
@@ -116,20 +127,31 @@
       c.onConnect = () => {
         log('STOMP connected.');
         c.subscribe('/user/queue/canvas-created', onCanvasCreated);
-        c.subscribe('/user/queue/canvas-issue-created', (m) => log(`Issue created: ${m.body}`));
-        c.subscribe('/user/queue/errors', (m) => log(`Server error: ${m.body}`, true));
+        c.subscribe('/user/queue/canvas-issue-created', onIssueCreated);
+        c.subscribe('/user/queue/canvas-errors', onCanvasError);
         resolve();
       };
       c.onStompError = (frame) => {
         const detail = frame.headers?.message || frame.body || 'unknown error';
         log(`STOMP error: ${detail}`, true);
+        if (subscribeWatch) {
+          // The server refused a SUBSCRIBE frame and drops the connection after an ERROR frame.
+          const watcher = subscribeWatch;
+          if (client === c) client = null;
+          try { c.deactivate(); } catch (_) { /* already closing */ }
+          watcher(false);
+          return;
+        }
         reject(new Error(`STOMP error: ${detail}`));
       };
       c.onWebSocketError = () => {
         reject(new Error(`Could not open ${url}. Check the URL, TLS and CORS/origin settings. If the server only offers SockJS, a plain WebSocket URL will not work.`));
       };
       c.onWebSocketClose = () => {
-        if (client === c) {
+        if (client === c && subscribeWatch) {
+          client = null;
+          subscribeWatch(false);
+        } else if (client === c) {
           log('STOMP connection closed.', true);
           resetSession();
         }
@@ -144,12 +166,22 @@
     return connectPromise;
   }
 
-  function send(destination, body = {}) {
+  // Pass no body for commands that take none (deletes).
+  function send(destination, body) {
     if (!client || !client.connected) throw new Error('Not connected. Open a canvas first.');
-    client.publish({ destination, body: JSON.stringify(body) });
+    client.publish({ destination, body: body === undefined ? '' : JSON.stringify(body) });
+    if (pollMode) setTimeout(pollOnce, 400); // no broadcasts in poll mode, so re-read after each command
+  }
+
+  function onCanvasError(message) {
+    let error;
+    try { error = JSON.parse(message.body); } catch (_) { log(`Canvas error: ${message.body}`, true); return; }
+    log(`Server rejected a command (${error.status}): ${error.message}${error.destination ? ` [${error.destination}]` : ''}`, true);
   }
 
   function resetSession() {
+    stopPolling();
+    pollMode = false;
     topicSub = null;
     client = null;
     canvasId = null;
@@ -184,7 +216,7 @@
       select.append(new Option('— no canvases in this project —', ''));
       return;
     }
-    canvasesCache.forEach((c) => select.append(new Option(`${c.name || 'Untitled'}  (${String(c.id).slice(0, 8)})`, c.id)));
+    canvasesCache.forEach((c) => select.append(new Option(`${c.name || 'Untitled'}  (${String(c.id).slice(0, 8)}${c.elementCount !== undefined ? `, ${c.elementCount} items` : ''})`, c.id)));
     if (selectId) select.value = selectId;
   }
 
@@ -198,9 +230,10 @@
   }
 
   function onCanvasCreated(message) {
-    let created;
-    try { created = JSON.parse(message.body); } catch (_) { log(`Canvas created: ${message.body}`); return; }
-    log(`Canvas created: ${created.name || ''} (${created.id}).`);
+    let reply;
+    try { reply = JSON.parse(message.body); } catch (_) { log(`Canvas created: ${message.body}`); return; }
+    const created = reply.canvas || reply; // CanvasDetailResponse: { canvas, elements }
+    log(`Canvas created: "${created.name || ''}" (${created.id}). Now subscribing for live updates.`);
     if (created.id && !canvasesCache.some((c) => c.id === created.id)) canvasesCache.push(created);
     fillSelect(created.id);
     if (created.id) run(openCanvas);
@@ -208,7 +241,7 @@
 
   async function createCanvas() {
     const pid = projectId();
-    const name = (window.prompt('Name for the new canvas', 'Test canvas') || '').trim();
+    const name = (window.prompt('Name for the new canvas (max 200 characters)', 'Test canvas') || '').trim().slice(0, 200);
     if (!name) return;
     await ensureStomp();
     send(`/app/projects/${enc(pid)}/canvases/create`, { name });
@@ -217,10 +250,49 @@
 
   // ---------- Open a canvas ----------
 
+  // Asks for a receipt on SUBSCRIBE so we know whether the server accepted it.
+  function trySubscribe(id) {
+    return new Promise((resolve) => {
+      const receipt = `canvas-${Date.now()}`;
+      let timer = null;
+      const finish = (ok) => {
+        clearTimeout(timer);
+        if (subscribeWatch === finish) subscribeWatch = null;
+        resolve(ok);
+      };
+      subscribeWatch = finish;
+      timer = setTimeout(() => {
+        log('No subscription receipt from the server within 5s; assuming the subscription worked.');
+        finish(true);
+      }, 5000);
+      client.watchForReceipt(receipt, () => finish(true));
+      topicSub = client.subscribe(`/topic/canvases/${id}`, onCanvasEvent, { receipt });
+    });
+  }
+
+  function applyDetail(detail) {
+    const canvas = detail.canvas || detail; // { canvas, elements }
+    canvasName = canvas.name || canvasName;
+    const next = new Map();
+    (detail.elements || detail.items || []).forEach((it) => next.set(it.id, it));
+    // Keep our local copy of an item that is being dragged right now.
+    if (drag && (drag.mode === 'move' || drag.mode === 'resize') && items.has(drag.id) && next.has(drag.id)) {
+      next.set(drag.id, items.get(drag.id));
+    }
+    items.clear();
+    next.forEach((it, id) => items.set(id, it));
+    if (selectedId && !items.has(selectedId)) selectedId = null;
+    updateControls();
+    updateInspector(true);
+    scheduleRender();
+  }
+
   async function openCanvas() {
     const id = $('canvasSelect').value;
     if (!id) throw new Error('Pick a canvas first (use Load canvases).');
 
+    stopPolling();
+    pollMode = false;
     try { topicSub?.unsubscribe(); } catch (_) { /* ignore */ }
     topicSub = null;
     canvasId = null;
@@ -233,30 +305,79 @@
     // Subscribe first, then fetch, so no broadcast is missed while loading.
     loading = true;
     buffered = [];
-    topicSub = client.subscribe(`/topic/canvases/${id}`, onCanvasEvent);
+    const live = await trySubscribe(id);
+    if (!live) {
+      topicSub = null;
+      buffered = [];
+      log(`The server rejected the live subscription to /topic/canvases/${id}. The canvas itself is fine; the backend's subscription guard is refusing the topic. Falling back to refreshing every 2 seconds so you can still test edits.`, true);
+      await ensureStomp();
+      pollMode = true;
+    }
+
     let detail;
     try {
       detail = await api(`/api/v1/canvases/${enc(id)}`, 'GET');
     } catch (error) {
       loading = false;
-      try { topicSub.unsubscribe(); } catch (_) { /* ignore */ }
+      try { topicSub?.unsubscribe(); } catch (_) { /* ignore */ }
       topicSub = null;
+      pollMode = false;
       throw error;
     }
 
     canvasId = id;
-    canvasName = detail.name || '';
-    revision = detail.revision ?? null;
-    listOf({ items: detail.items || detail.elements }).forEach((it) => items.set(it.id, it));
+    applyDetail(detail);
     loading = false;
     buffered.forEach(applyEvent);
     buffered = [];
 
-    setLive(`Live · ${canvasName || id.slice(0, 8)}`);
-    log(`Opened "${canvasName}" with ${items.size} item(s), revision ${revision ?? 'n/a'}. Subscribed for live updates.`);
+    if (pollMode) {
+      startPolling();
+      setLive(`Polling every 2s · ${canvasName || id.slice(0, 8)}`);
+    } else {
+      setLive(`Live · ${canvasName || id.slice(0, 8)}`);
+    }
+    log(`Opened "${canvasName}" with ${items.size} item(s)${pollMode ? ' (polling, not live)' : ' and subscribed for live updates'}.`);
     resetView();
     updateControls();
     scheduleRender();
+  }
+
+  // ---------- Polling fallback (only when the live topic is rejected) ----------
+
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(pollOnce, 2000);
+  }
+
+  function stopPolling() {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  async function pollOnce() {
+    if (!pollMode || !canvasId || polling || drag) return;
+    polling = true;
+    const id = canvasId;
+    try {
+      const detail = await api(`/api/v1/canvases/${enc(id)}`, 'GET', null, { quiet: true });
+      if (id !== canvasId) return;
+      lastPollError = '';
+      applyDetail(detail);
+    } catch (error) {
+      const text = errorMessage(error);
+      if (/HTTP 404/.test(text)) {
+        log('This canvas no longer exists.', true);
+        canvasesCache = canvasesCache.filter((c) => c.id !== id);
+        fillSelect('');
+        disconnectAll();
+      } else if (text !== lastPollError) {
+        lastPollError = text;
+        log(`Refresh failed: ${text}`, true);
+      }
+    } finally {
+      polling = false;
+    }
   }
 
   function renameCanvas() {
@@ -270,11 +391,23 @@
   function deleteCanvas() {
     if (!canvasId) return;
     if (!window.confirm(`Delete canvas "${canvasName}" for everyone? This cannot be undone.`)) return;
-    send(`/app/canvases/${enc(canvasId)}/delete`, {});
+    send(`/app/canvases/${enc(canvasId)}/delete`);
     log('Requested canvas deletion.');
   }
 
   // ---------- Incoming events ----------
+
+  function onIssueCreated(message) {
+    let reply;
+    try { reply = JSON.parse(message.body); } catch (_) { log(`Issue created: ${message.body}`); return; }
+    const issue = reply.issue || {};
+    log(`Issue created: ${issue.title || issue.id || 'unknown'}${issue.key ? ` (${issue.key})` : ''}.`);
+    if (reply.element?.id) {
+      items.set(reply.element.id, reply.element);
+      updateInspector(true);
+      scheduleRender();
+    }
+  }
 
   function onCanvasEvent(message) {
     let event;
@@ -285,7 +418,6 @@
   function applyEvent(event) {
     const type = event.type || event.eventType;
     const payload = event.payload || {};
-    if (event.revision !== undefined) revision = event.revision;
 
     if (type === 'ELEMENTS_UPSERTED') {
       const list = event.elements || event.items || payload.elements || (event.element ? [event.element] : []);
@@ -474,6 +606,7 @@
         stroke: '#536b3c', 'stroke-width': 2, 'stroke-dasharray': '6 4', 'marker-end': 'url(#arrowHead)', 'pointer-events': 'none'
       }, world);
     }
+    refreshRevision();
     $('canvasCount').textContent = String(items.size);
     $('canvasRevision').textContent = revision ?? '—';
   }
@@ -663,7 +796,8 @@
     }
     $('inspText').disabled = it.type === 'ARROW';
     $('inspShapeWrap').hidden = it.type !== 'SHAPE';
-    $('inspIssueButton').disabled = it.type === 'ARROW';
+    $('inspIssueButton').disabled = it.type === 'ARROW' || Boolean(it.linkedIssue);
+    $('inspIssueButton').textContent = it.linkedIssue ? 'Issue linked' : 'Convert to issue';
   }
 
   function commitField(field, value) {
@@ -676,7 +810,7 @@
 
   function deleteSelected() {
     if (!selectedId) return;
-    send(`/app/canvases/${enc(canvasId)}/elements/${enc(selectedId)}/delete`, {});
+    send(`/app/canvases/${enc(canvasId)}/elements/${enc(selectedId)}/delete`);
     log('Requested item deletion.');
   }
 
@@ -689,9 +823,15 @@
   }));
   $('inspDeleteButton').addEventListener('click', () => run(async () => deleteSelected()));
   $('inspIssueButton').addEventListener('click', () => run(async () => {
-    if (!selectedId) return;
-    send(`/app/canvases/${enc(canvasId)}/elements/${enc(selectedId)}/convert-to-issue`, {});
-    log('Requested conversion to an issue.');
+    const it = selectedId ? items.get(selectedId) : null;
+    if (!it) return;
+    const title = (window.prompt('Issue title', (it.text || '').split('\n')[0].slice(0, 80)) || '').trim();
+    if (!title) return;
+    send(`/app/canvases/${enc(canvasId)}/elements/${enc(it.id)}/convert-to-issue`, {
+      title,
+      description: it.text || ''
+    });
+    log(`Requested conversion to issue "${title}".`);
   }));
 
   // ---------- Wiring ----------
