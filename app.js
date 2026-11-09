@@ -81,11 +81,11 @@
           ...(payload ? { 'Content-Type': 'application/json' } : {})
         },
         body: payload ? JSON.stringify(payload) : undefined,
-        signal: AbortSignal.timeout(20000)
+        signal: AbortSignal.timeout(opts.timeoutMs || 20000)
       });
     } catch (error) {
       if (error.name === 'TimeoutError' || error.name === 'AbortError') {
-        throw new Error(`Request timed out after 20 seconds: ${method} ${url}`);
+        throw new Error(`Request timed out after ${Math.round((opts.timeoutMs || 20000) / 1000)} seconds: ${method} ${url}`);
       }
       throw new Error(`Could not complete ${method} ${url}. Check CORS, DNS/TLS and the API URL. (${errorMessage(error)})`);
     }

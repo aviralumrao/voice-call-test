@@ -5,9 +5,12 @@
   const { log, api, run, errorMessage, validatedApiBase } = window.FrietSync;
 
   const MAX_LEN = 1000;
-  const WS_TIMEOUT_MS = 60000;
+  const WS_TIMEOUT_MS = 120000;
+  const REST_TIMEOUT_MS = 120000;
+  const QUEUE = '/user/queue/ai-chat';
 
-  let socket = null;
+  let client = null;
+  let connectPromise = null;
   let wsUrlEdited = false;
   // requestId (or a temporary key) -> { bubble, startedAt, timer }
   const pending = new Map();
@@ -31,9 +34,7 @@
     try {
       const base = new URL(validatedApiBase());
       const proto = base.protocol === 'https:' ? 'wss:' : 'ws:';
-      const id = $('projectId').value.trim() || '{projectId}';
-      const path = base.pathname.replace(/\/$/, '');
-      return `${proto}//${base.host}${path}/api/v1/projects/${id}/rag-chat`;
+      return `${proto}//${base.host}/ws`;
     } catch (_) {
       return '';
     }
@@ -125,7 +126,7 @@
     const startedAt = performance.now();
     setBusy(true);
     try {
-      const data = await api(path, 'POST', { question });
+      const data = await api(path, 'POST', { question }, { timeoutMs: REST_TIMEOUT_MS });
       fillAnswer(bubble, data);
       log(`RAG answer received with ${Array.isArray(data?.sources) ? data.sources.length : 0} source(s).`);
     } catch (error) {
@@ -138,8 +139,8 @@
   }
 
   function askWs(question) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error('Connect the WebSocket first.');
+    if (!client || !client.connected) {
+      throw new Error('Connect STOMP first.');
     }
     addMessage('user', question);
     const bubble = addMessage('bot pending', 'Waiting for the server…');
@@ -150,13 +151,16 @@
         awaitingStart = awaitingStart.filter((e) => e !== entry);
         if (entry.requestId) pending.delete(entry.requestId);
         fillError(bubble, `No response after ${WS_TIMEOUT_MS / 1000} seconds.`);
-        log('RAG WebSocket request timed out.', true);
+        log('RAG request timed out.', true);
         updateBusyFromPending();
       }
     }, WS_TIMEOUT_MS);
     awaitingStart.push(entry);
-    socket.send(JSON.stringify({ question }));
-    log('RAG question sent over WebSocket.');
+    client.publish({
+      destination: `/app/projects/${encodeURIComponent(projectId())}/rag-chat`,
+      body: JSON.stringify({ question })
+    });
+    log('RAG question sent over STOMP.');
     setBusy(true);
   }
 
@@ -168,6 +172,7 @@
   async function submit() {
     const question = readQuestion();
     if (isWsMode()) {
+      projectId();
       askWs(question);
     } else {
       await askRest(question);
@@ -176,64 +181,135 @@
     updateCount();
   }
 
-  // ---------- WebSocket ----------
+  // ---------- STOMP ----------
 
-  function buildWsUrl() {
-    const raw = $('ragWsUrl').value.trim();
-    if (!raw) throw new Error('Enter the RAG WebSocket URL.');
-    let url;
-    try {
-      url = new URL(raw);
-    } catch (_) {
-      throw new Error('The RAG WebSocket URL is invalid. Start it with ws:// or wss://.');
-    }
-    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
-      throw new Error('The RAG WebSocket URL must start with ws:// or wss://.');
-    }
-    if (location.protocol === 'https:' && url.protocol === 'ws:') {
-      throw new Error('The page is HTTPS but the WebSocket URL is ws://. Browsers block this. Use wss://.');
-    }
-    if ($('ragWsTokenQuery').checked) url.searchParams.set('token', token());
-    return url.toString();
-  }
+  function connectStomp() {
+    if (client && client.connected) return Promise.resolve();
+    if (connectPromise) return connectPromise;
 
-  function connectWs() {
-    if (socket && socket.readyState <= WebSocket.OPEN) {
-      log('The RAG WebSocket is already connected or connecting.');
-      return;
-    }
-    const url = buildWsUrl();
-    log(`Connecting RAG WebSocket to ${url.replace(/token=[^&]+/, 'token=…')}`);
-    setConn('Connecting…');
-    $('ragConnectButton').disabled = true;
+    connectPromise = new Promise((resolve, reject) => {
+      if (!window.StompJs) return reject(new Error('STOMP client library is unavailable. Check the Network tab.'));
+      const t = token();
+      const url = $('ragWsUrl').value.trim();
+      if (!url) return reject(new Error('Enter the STOMP WebSocket URL.'));
+      if (location.protocol === 'https:' && url.startsWith('ws:')) {
+        return reject(new Error('The page is HTTPS but the URL is ws://. Browsers block this. Use wss://.'));
+      }
 
-    const ws = new WebSocket(url);
-    socket = ws;
+      setConn('Connecting…');
+      $('ragConnectButton').disabled = true;
+      log(`Connecting STOMP to ${url}`);
 
-    ws.onopen = () => {
-      setConn('Connected');
-      $('ragDisconnectButton').disabled = false;
-      log('RAG WebSocket connected.');
-    };
+      const c = new StompJs.Client({
+        brokerURL: url,
+        connectHeaders: { Authorization: `Bearer ${t}` },
+        reconnectDelay: 0,
+        heartbeatIncoming: 10000,
+        heartbeatOutgoing: 10000
+      });
+      client = c;
 
-    ws.onmessage = (event) => handleWsMessage(event.data);
-
-    ws.onerror = () => {
-      log('RAG WebSocket error. Check the URL, token, project access and CORS or origin rules on the backend.', true);
-    };
-
-    ws.onclose = (event) => {
-      if (socket === ws) socket = null;
+      c.onConnect = () => {
+        c.subscribe(QUEUE, (message) => handleWsMessage(message.body));
+        setConn('Connected');
+        $('ragDisconnectButton').disabled = false;
+        log(`STOMP connected and subscribed to ${QUEUE}.`);
+        resolve();
+      };
+      c.onStompError = (frame) => {
+        const detail = frame.headers?.message || frame.body || 'unknown error';
+        log(`STOMP error: ${detail}`, true);
+        if (frame.body && frame.body !== detail) log(`STOMP error body: ${String(frame.body).slice(0, 400)}`, true);
+        reject(new Error(`STOMP error: ${detail}`));
+      };
+      c.onWebSocketError = () => {
+        reject(new Error(`Could not open ${url}. Check the URL, TLS and CORS or origin settings.`));
+      };
+      c.onWebSocketClose = () => {
+        const wasCurrent = client === c;
+        if (wasCurrent) {
+          client = null;
+          setConn('Not connected');
+          $('ragConnectButton').disabled = false;
+          $('ragDisconnectButton').disabled = true;
+          log('STOMP connection closed.', true);
+          failAllPending('The connection closed before an answer arrived.');
+        }
+        reject(new Error('WebSocket closed before STOMP connected.'));
+      };
+      c.activate();
+    }).catch((error) => {
       setConn('Not connected');
       $('ragConnectButton').disabled = false;
-      $('ragDisconnectButton').disabled = true;
-      log(`RAG WebSocket closed (code ${event.code}${event.reason ? `: ${event.reason}` : ''}).`, event.code !== 1000);
-      failAllPending('The connection closed before an answer arrived.');
-    };
+      if (client && !client.connected) { try { client.deactivate(); } catch (_) { /* closing */ } client = null; }
+      throw error;
+    }).finally(() => { connectPromise = null; });
+
+    return connectPromise;
   }
 
-  function disconnectWs() {
-    if (socket) socket.close(1000, 'client closed');
+  function disconnectStomp() {
+    if (!client) return;
+    const c = client;
+    client = null;
+    try { c.deactivate(); } catch (_) { /* closing */ }
+    setConn('Not connected');
+    $('ragConnectButton').disabled = false;
+    $('ragDisconnectButton').disabled = true;
+    failAllPending('Disconnected before an answer arrived.');
+    log('STOMP disconnected.');
+  }
+
+  function handleWsMessage(raw) {
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch (_) {
+      log(`Unreadable RAG message: ${String(raw).slice(0, 300)}`, true);
+      return;
+    }
+
+    if (msg.type === 'started') {
+      const entry = awaitingStart.shift();
+      if (entry) {
+        entry.requestId = msg.requestId || null;
+        if (entry.requestId) pending.set(entry.requestId, entry);
+        entry.bubble.textContent = 'Working on it…';
+      }
+      $('ragRequestId').textContent = msg.requestId || '—';
+      log(`RAG request started${msg.requestId ? `: ${msg.requestId}` : ''}.`);
+      return;
+    }
+
+    if (msg.type === 'completed') {
+      const entry = takeEntry(msg.requestId);
+      if (!entry) { log('Got a completed message with no matching question.', true); return; }
+      entry.done = true;
+      clearTimeout(entry.timer);
+      if (entry.requestId) pending.delete(entry.requestId);
+      fillAnswer(entry.bubble, msg.data);
+      setTiming(entry.startedAt);
+      log(`RAG request completed${msg.requestId ? `: ${msg.requestId}` : ''}.`);
+      updateBusyFromPending();
+      return;
+    }
+
+    if (msg.type === 'error') {
+      const detail = msg.data?.message || 'The server reported an error.';
+      const entry = takeEntry(msg.requestId);
+      if (entry) {
+        entry.done = true;
+        clearTimeout(entry.timer);
+        if (entry.requestId) pending.delete(entry.requestId);
+        fillError(entry.bubble, detail);
+        setTiming(entry.startedAt);
+      }
+      log(`RAG error: ${detail}`, true);
+      updateBusyFromPending();
+      return;
+    }
+
+    log(`Unrecognised RAG message type "${msg.type}": ${String(raw).slice(0, 300)}`, true);
   }
 
   function failAllPending(message) {
@@ -323,7 +399,7 @@
     $('ragWsSettings').hidden = !ws;
     if (ws) {
       syncWsField();
-      setConn(socket && socket.readyState === WebSocket.OPEN ? 'Connected' : 'Not connected');
+      setConn(client && client.connected ? 'Connected' : 'Not connected');
     } else {
       setConn('REST (no connection needed)');
     }
@@ -338,8 +414,8 @@
     }
   });
   $('ragSendButton').addEventListener('click', () => run(submit));
-  $('ragConnectButton').addEventListener('click', () => run(async () => connectWs()));
-  $('ragDisconnectButton').addEventListener('click', () => disconnectWs());
+  $('ragConnectButton').addEventListener('click', () => run(connectStomp));
+  $('ragDisconnectButton').addEventListener('click', () => disconnectStomp());
   $('ragClearButton').addEventListener('click', () => {
     const box = $('ragMessages');
     box.querySelectorAll('.rag-msg').forEach((n) => n.remove());
@@ -350,7 +426,7 @@
     $(id).addEventListener('input', () => { if (isWsMode()) syncWsField(); });
   });
   window.addEventListener('frietsync:view', (e) => { if (e.detail === 'rag') applyMode(); });
-  window.addEventListener('beforeunload', () => { try { socket?.close(1000); } catch (_) { /* closing */ } });
+  window.addEventListener('beforeunload', () => { try { client?.deactivate(); } catch (_) { /* closing */ } });
 
   updateCount();
   applyMode();

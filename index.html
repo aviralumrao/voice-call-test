@@ -157,14 +157,14 @@
           <label>Transport
             <select id="ragMode">
               <option value="rest">REST (POST /rag-chat/ask)</option>
-              <option value="ws">WebSocket (real-time)</option>
+              <option value="ws">STOMP over WebSocket (real-time)</option>
             </select>
           </label>
           <div id="ragWsSettings" hidden>
-            <label>RAG WebSocket URL (derived from the API URL and project ID, edit if your endpoint differs)
-              <input id="ragWsUrl" placeholder="wss://api.example.com/api/v1/projects/{id}/rag-chat">
+            <label>STOMP WebSocket URL (derived from the API URL, edit if your endpoint differs)
+              <input id="ragWsUrl" placeholder="wss://api.example.com/ws">
             </label>
-            <label class="check"><input type="checkbox" id="ragWsTokenQuery" checked> Send the bearer token as a ?token= query parameter (browsers cannot set headers on a WebSocket)</label>
+            <p class="hint">Connects with an Authorization: Bearer header, subscribes to /user/queue/ai-chat and sends to /app/projects/{projectId}/rag-chat.</p>
             <div class="actions">
               <button id="ragConnectButton" class="primary">Connect</button>
               <button id="ragDisconnectButton" disabled>Disconnect</button>
