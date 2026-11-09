@@ -287,7 +287,7 @@
       entry.done = true;
       clearTimeout(entry.timer);
       if (entry.requestId) pending.delete(entry.requestId);
-      fillAnswer(entry.bubble, msg.data);
+      fillAnswer(entry.bubble, msg.response ?? msg.data);
       setTiming(entry.startedAt);
       log(`RAG request completed${msg.requestId ? `: ${msg.requestId}` : ''}.`);
       updateBusyFromPending();
@@ -295,7 +295,8 @@
     }
 
     if (msg.type === 'error') {
-      const detail = msg.data?.message || 'The server reported an error.';
+      const err = msg.error ?? msg.data;
+      const detail = (typeof err === 'string' ? err : err?.message) || 'The server reported an error.';
       const entry = takeEntry(msg.requestId);
       if (entry) {
         entry.done = true;
