@@ -9,6 +9,7 @@
     <script src="https://cdn.jsdelivr.net/npm/janus-gateway@1.2.2/src/janus.js" onerror="document.getElementById('appStatus').textContent='Could not load Janus from jsDelivr. Check the Network tab.';document.getElementById('appStatus').className='error-banner';"></script>
     <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js" onerror="document.getElementById('appStatus').textContent='Could not load the STOMP client from jsDelivr. The canvas test needs it.';document.getElementById('appStatus').className='error-banner';"></script>
     <script defer src="app.js" onerror="document.getElementById('appStatus').textContent='app.js failed to load.';document.getElementById('appStatus').className='error-banner';"></script>
+    <script defer src="rag.js" onerror="document.getElementById('appStatus').textContent='rag.js failed to load.';document.getElementById('appStatus').className='error-banner';"></script>
     <script defer src="canvas.js" onerror="document.getElementById('appStatus').textContent='canvas.js failed to load.';document.getElementById('appStatus').className='error-banner';"></script>
   </head>
   <body>
@@ -18,6 +19,7 @@
         <div class="nav-tabs" role="tablist">
           <button type="button" class="nav-tab active" id="tabVideo" data-view="video" role="tab" aria-selected="true">Video call</button>
           <button type="button" class="nav-tab" id="tabCanvas" data-view="canvas" role="tab" aria-selected="false">Live canvas</button>
+          <button type="button" class="nav-tab" id="tabRag" data-view="rag" role="tab" aria-selected="false">RAG chat</button>
         </div>
       </div>
     </nav>
@@ -143,6 +145,50 @@
               <button type="button" id="inspFrontButton">Bring to front</button>
               <button type="button" id="inspIssueButton">Convert to issue</button>
               <button type="button" id="inspDeleteButton" class="danger">Delete item</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ===================== RAG CHAT VIEW ===================== -->
+      <div id="view-rag" class="view" hidden>
+        <section class="panel">
+          <h2>RAG chat</h2>
+          <label>Transport
+            <select id="ragMode">
+              <option value="rest">REST (POST /rag-chat/ask)</option>
+              <option value="ws">WebSocket (real-time)</option>
+            </select>
+          </label>
+          <div id="ragWsSettings" hidden>
+            <label>RAG WebSocket URL (derived from the API URL and project ID, edit if your endpoint differs)
+              <input id="ragWsUrl" placeholder="wss://api.example.com/api/v1/projects/{id}/rag-chat">
+            </label>
+            <label class="check"><input type="checkbox" id="ragWsTokenQuery" checked> Send the bearer token as a ?token= query parameter (browsers cannot set headers on a WebSocket)</label>
+            <div class="actions">
+              <button id="ragConnectButton" class="primary">Connect</button>
+              <button id="ragDisconnectButton" disabled>Disconnect</button>
+            </div>
+          </div>
+          <div class="call-details" aria-live="polite">
+            <div><span>Connection</span><strong id="ragConn">REST (no connection needed)</strong></div>
+            <div><span>Last request</span><code id="ragRequestId">—</code></div>
+            <div><span>Last response time</span><code id="ragTiming">—</code></div>
+          </div>
+        </section>
+
+        <section class="panel rag-panel">
+          <div class="rag-messages" id="ragMessages" aria-live="polite">
+            <p class="canvas-empty" id="ragEmpty">Ask a question about the project documents.</p>
+          </div>
+          <div class="rag-compose">
+            <textarea id="ragQuestion" maxlength="1000" rows="2" placeholder="How do I implement login authentication?"></textarea>
+            <div class="rag-compose-row">
+              <span class="hint" id="ragCount">0 / 1000</span>
+              <div class="actions">
+                <button id="ragClearButton" class="quiet">Clear chat</button>
+                <button id="ragSendButton" class="primary">Ask</button>
+              </div>
             </div>
           </div>
         </section>

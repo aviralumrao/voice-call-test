@@ -50,3 +50,27 @@ select{display:block;width:100%;margin-top:7px;background:#fbfcf9;border:1px sol
 .inspector-fields label{margin:0}
 .inspector-fields[hidden],.inspector .actions[hidden],#inspShapeWrap[hidden]{display:none}
 @media(max-width:580px){.inspector-fields{grid-template-columns:1fr}.nav-tab{padding:0 10px}}
+
+/* ---------- RAG chat ---------- */
+textarea{display:block;width:100%;resize:vertical;min-height:56px;max-height:200px;background:#fbfcf9;border:1px solid #dce1d6;border-radius:8px;padding:11px 12px;color:#20251f;font:14px 'DM Sans',sans-serif;line-height:1.45;outline:none}
+textarea:focus{border-color:#778a5e;box-shadow:0 0 0 3px #778a5e1c}
+label.check{display:flex;gap:9px;align-items:flex-start;font-weight:500;line-height:1.4}
+label.check input{display:inline-block;width:auto;margin:2px 0 0}
+#ragWsSettings[hidden]{display:none}
+.rag-panel{padding:14px}
+.rag-messages{position:relative;display:flex;flex-direction:column;gap:12px;height:min(56vh,520px);min-height:300px;overflow-y:auto;padding:14px;border:1px solid #dce1d6;border-radius:10px;background:#fbfcf9}
+.rag-msg{max-width:86%;padding:10px 13px;border-radius:12px;font-size:14px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.rag-msg.user{align-self:flex-end;background:#536b3c;color:#fff;border-bottom-right-radius:4px}
+.rag-msg.bot{align-self:flex-start;background:#fff;border:1px solid #e5e8df;border-bottom-left-radius:4px}
+.rag-msg.bot.pending{color:#7e8779;font-style:italic}
+.rag-msg.bot.error{color:#a43e34;border-color:#e8c9c5;background:#fdf5f4}
+.rag-sources{margin:10px 0 0;padding:9px 0 0;border-top:1px solid #eef0e9;list-style:none;white-space:normal}
+.rag-sources h3{font:500 11px 'DM Mono',monospace;letter-spacing:.08em;color:#617050;margin:0 0 6px;text-transform:uppercase}
+.rag-sources li{font-size:12px;color:#475044;padding:3px 0}
+.rag-sources code{font:11px 'DM Mono',monospace;color:#818a7b;margin-left:6px}
+.rag-compose{margin-top:12px}
+.rag-compose-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.rag-compose-row .hint{margin:0}
+.rag-compose-row .actions{margin:8px 0 0}
+.rag-messages .canvas-empty{position:absolute}
+@media(max-width:580px){.rag-msg{max-width:94%}}

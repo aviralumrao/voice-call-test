@@ -464,6 +464,12 @@
       title: 'Live canvas test',
       intro: 'Open the same canvas in two browser windows and edit in one to watch the other update. Editing needs an editor role; viewing needs project membership.',
       footer: 'Edits are sent over STOMP and the canvas only changes when the server broadcasts the result, so what you see is what the backend stored.'
+    },
+    rag: {
+      eyebrow: 'FRIETSYNC · RAG CHAT',
+      title: 'RAG chat test',
+      intro: 'Ask questions about the project documents. Use REST for a single request and response, or WebSocket to watch the started, completed and error events. Needs a valid bearer token and project membership.',
+      footer: 'Questions are limited to 1000 characters. Answers come with the source documents the backend used.'
     }
   };
 
@@ -471,7 +477,7 @@
     if (!views[name]) name = 'video';
     Object.keys(views).forEach((key) => {
       $(`view-${key}`).hidden = key !== name;
-      const tab = $(key === 'video' ? 'tabVideo' : 'tabCanvas');
+      const tab = $(`tab${key.charAt(0).toUpperCase()}${key.slice(1)}`);
       tab.classList.toggle('active', key === name);
       tab.setAttribute('aria-selected', String(key === name));
     });
