@@ -337,58 +337,6 @@
     return pending.values().next().value || null;
   }
 
-  function handleWsMessage(raw) {
-    let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch (_) {
-      log(`Unreadable RAG message: ${String(raw).slice(0, 300)}`, true);
-      return;
-    }
-
-    if (msg.type === 'started') {
-      const entry = awaitingStart.shift();
-      if (entry) {
-        entry.requestId = msg.requestId || null;
-        if (entry.requestId) pending.set(entry.requestId, entry);
-        entry.bubble.textContent = 'Working on it…';
-      }
-      $('ragRequestId').textContent = msg.requestId || '—';
-      log(`RAG request started${msg.requestId ? `: ${msg.requestId}` : ''}.`);
-      return;
-    }
-
-    if (msg.type === 'completed') {
-      const entry = takeEntry(msg.requestId);
-      if (!entry) { log('Got a completed message with no matching question.', true); return; }
-      entry.done = true;
-      clearTimeout(entry.timer);
-      if (entry.requestId) pending.delete(entry.requestId);
-      fillAnswer(entry.bubble, msg.data);
-      setTiming(entry.startedAt);
-      log(`RAG request completed${msg.requestId ? `: ${msg.requestId}` : ''}.`);
-      updateBusyFromPending();
-      return;
-    }
-
-    if (msg.type === 'error') {
-      const detail = msg.data?.message || 'The server reported an error.';
-      const entry = takeEntry(msg.requestId);
-      if (entry) {
-        entry.done = true;
-        clearTimeout(entry.timer);
-        if (entry.requestId) pending.delete(entry.requestId);
-        fillError(entry.bubble, detail);
-        setTiming(entry.startedAt);
-      }
-      log(`RAG error: ${detail}`, true);
-      updateBusyFromPending();
-      return;
-    }
-
-    log(`Unrecognised RAG message type "${msg.type}": ${String(raw).slice(0, 300)}`, true);
-  }
-
   // ---------- UI wiring ----------
 
   function updateCount() {
