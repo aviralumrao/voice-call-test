@@ -204,7 +204,7 @@
         brokerURL: url,
         connectHeaders: { Authorization: `Bearer ${t}` },
         reconnectDelay: 0,
-        heartbeatIncoming: 10000,
+        heartbeatIncoming: 0,
         heartbeatOutgoing: 10000
       });
       client = c;
